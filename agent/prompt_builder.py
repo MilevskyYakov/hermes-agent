@@ -162,8 +162,8 @@ MEMORY_GUIDANCE = (
     "Specifically: do not record PR numbers, issue numbers, commit SHAs, 'fixed bug X', "
     "'submitted PR Y', 'Phase N done', file counts, or any artifact that will be stale "
     "in 7 days. If a fact will be stale in a week, it does not belong in memory. "
-    "If you've discovered a new way to do something, solved a problem that could be "
-    "necessary later, save it as a skill with the skill tool.\n"
+    "If you've discovered a reusable procedure, do not create a new skill automatically. "
+    "Propose a targeted update to an existing skill only when one clearly owns it.\n"
     "Write memories as declarative facts, not instructions to yourself. "
     "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
     "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
@@ -179,12 +179,11 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "After completing a complex task (5+ tool calls), fixing a tricky error, "
-    "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
+    "Never create a new skill unless the user explicitly asks for that specific skill. "
+    "Do not treat task complexity, errors, corrections, or a reusable workflow as "
+    "permission to create one.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "propose the smallest targeted update and apply it only after explicit user approval."
 )
 
 KANBAN_GUIDANCE = (
@@ -1687,10 +1686,9 @@ def build_skills_system_prompt(
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "Never create a skill unless the user explicitly asks for that specific skill.\n"
+            "If a loaded skill is missing steps, has wrong commands, or needs a pitfall, "
+            "propose the smallest update and apply it only after explicit user approval.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
