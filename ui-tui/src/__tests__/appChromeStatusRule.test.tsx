@@ -1,7 +1,7 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { StatusRule, workPhase } from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
@@ -153,22 +153,39 @@ describe('StatusRule background-subagent indicator', () => {
     expect(textContent(element)).not.toContain('⛓')
   })
 
-  it('spells out the auto-resume hint when idle with subagents in flight', () => {
+  it('opens the agents view from the aggregate', () => {
+    const openAgents = vi.fn()
+
+    const element = StatusRule({
+      ...baseProps,
+      onSubagentClick: openAgents,
+      usage: { ...baseProps.usage, active_subagents: 2 }
+    })
+
+    const target = findClickableWithText(element, '⛓ 2 · ▶2')
+
+    expect(target).not.toBeNull()
+    target!.props.onClick({ stopImmediatePropagation: vi.fn() })
+
+    expect(openAgents).toHaveBeenCalledOnce()
+  })
+
+  it('summarizes one active subagent without prose', () => {
     const element = StatusRule({
       ...baseProps,
       usage: { ...baseProps.usage, active_subagents: 1 }
     })
 
-    expect(textContent(element)).toContain('resumes when subagent finishes')
+    expect(textContent(element)).toContain('⛓ 1 · ▶1')
   })
 
-  it('pluralizes the resume hint for multiple in-flight subagents', () => {
+  it('summarizes multiple active subagents without prose', () => {
     const element = StatusRule({
       ...baseProps,
       usage: { ...baseProps.usage, active_subagents: 3 }
     })
 
-    expect(textContent(element)).toContain('resumes when 3 subagents finish')
+    expect(textContent(element)).toContain('⛓ 3 · ▶3')
   })
 
   it('hides the resume hint mid-turn (a busy turn owns the indicator)', () => {
@@ -212,7 +229,7 @@ describe('StatusRule session count click target', () => {
       busy: false,
       cols: 100,
       cwdLabel: '~/repo',
-      liveSessionCount: 1,
+      liveSessionCount: 2,
       model: 'kimi-k2.6',
       onSessionCountClick: openSwitcher,
       sessionStartedAt: null,
@@ -224,7 +241,7 @@ describe('StatusRule session count click target', () => {
       voiceLabel: ''
     })
 
-    const clickableSessionCount = findClickableWithText(element, '1 session')
+    const clickableSessionCount = findClickableWithText(element, '2 sessions')
 
     expect(clickableSessionCount).not.toBeNull()
     clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
@@ -260,8 +277,9 @@ describe('StatusRule session count click target', () => {
     const rendered = textContent(element)
 
     // Must-keep essentials survive intact …
-    expect(rendered).toContain('ready')
+    expect(rendered).toContain('✓ готов')
     expect(rendered).toContain('opus 4.8')
+    expect(rendered).not.toContain('25%')
     // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
   })
@@ -423,71 +441,22 @@ describe('StatusRule battery indicator', () => {
   })
 })
 
-describe('StatusRule idle-since read-out', () => {
-  // The IdleSince component uses hooks, so it can't be invoked outside a
-  // renderer — assert on the element tree instead (same reason the duration
-  // tests don't check SessionDuration's text).
-  const findComponentByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
-    if (node === null || node === undefined || typeof node === 'boolean') {
-      return null
-    }
-
-    if (Array.isArray(node)) {
-      for (const child of node) {
-        const found = findComponentByName(child, name)
-
-        if (found) {
-          return found
-        }
-      }
-
-      return null
-    }
-
-    if (!React.isValidElement(node)) {
-      return null
-    }
-
-    if (typeof node.type === 'function' && node.type.name === name) {
-      return node
-    }
-
-    return findComponentByName(node.props.children, name)
-  }
-
-  it('shows time since the last final agent response when idle', () => {
-    const endedAt = Date.now() - 42_000
-
-    const element = StatusRule({
-      ...baseProps,
-      lastTurnEndedAt: endedAt,
-      sessionStartedAt: Date.now() - 60_000
-    })
-
-    const idle = findComponentByName(element, 'IdleSince')
-
-    expect(idle).not.toBeNull()
-    expect(idle!.props.endedAt).toBe(endedAt)
+describe('operational status phases', () => {
+  it('maps real tool families to stable phases', () => {
+    expect(workPhase('running…', true, 'read_file')).toEqual({ icon: '▣', label: 'читаю' })
+    expect(workPhase('running…', true, 'web_search')).toEqual({ icon: '⌕', label: 'ищу' })
+    expect(workPhase('running…', true, 'patch')).toEqual({ icon: '✎', label: 'изменяю' })
+    expect(workPhase('running…', true, 'delegate_task')).toEqual({ icon: '⛓', label: 'делегирую' })
   })
 
-  it('is hidden while a turn is busy', () => {
-    const element = StatusRule({
-      ...baseProps,
-      busy: true,
-      lastTurnEndedAt: Date.now() - 42_000,
-      turnStartedAt: Date.now()
-    })
+  it('always shows model effort, numeric context, and compression count', () => {
+    const rendered = textContent(
+      StatusRule({ ...baseProps, cwdLabel: '~/repo (main)', usage: { ...baseProps.usage, compressions: 0 } })
+    )
 
-    expect(findComponentByName(element, 'IdleSince')).toBeNull()
-  })
-
-  it('is hidden before the first turn completes', () => {
-    const element = StatusRule({
-      ...baseProps,
-      lastTurnEndedAt: null,
-      sessionStartedAt: Date.now() - 60_000
-    })
-
-    expect(findComponentByName(element, 'IdleSince')).toBeNull()
+    expect(rendered).toContain('◈ opus 4.8 · medium')
+    expect(rendered).toContain('◔ 50k/200k · 25%')
+    expect(rendered).toContain('↻ 0')
+    expect(rendered).toContain('⌂ repo · ⎇ main')
   })
 })
