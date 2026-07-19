@@ -6,6 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
@@ -458,6 +459,8 @@ const StatusRulePane = memo(function StatusRulePane({
   status
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
   const ui = useStore($uiState)
+  const tools = useTurnSelector(state => state.tools)
+  const subagents = useTurnSelector(state => state.subagents)
 
   if (ui.statusBar !== at) {
     return null
@@ -466,21 +469,22 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
+        activeToolName={tools.at(-1)?.name}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
         indicatorStyle={ui.indicatorStyle}
-        lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
-        sessionStartedAt={status.sessionStartedAt}
+        onSubagentClick={() => patchOverlayState({ agents: true })}
         status={ui.status}
         statusColor={status.statusColor}
+        subagents={subagents}
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}
