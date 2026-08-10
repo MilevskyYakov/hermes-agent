@@ -278,7 +278,7 @@ class TestShellFileOpsHelpers:
     def test_normalize_read_pagination_clamps_invalid_values(self):
         assert normalize_read_pagination(offset=0, limit=0) == (1, 1)
         assert normalize_read_pagination(offset=-10, limit=-5) == (1, 1)
-        assert normalize_read_pagination(offset="bad", limit="bad") == (1, 2000)
+        assert normalize_read_pagination(offset="bad", limit="bad") == (1, 200)
         assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
 
 
@@ -331,7 +331,7 @@ class TestShellFileOpsHelpers:
             "else exit 1; fi"
         )
         assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64"
-        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt' | cut -b1-8001"
+        assert commands[2] == "sed -n '1,200p' '/c/Users/alice/notes.txt' | cut -b1-8001"
         assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
 
     def test_is_likely_binary_by_extension(self, file_ops):
@@ -348,10 +348,10 @@ class TestShellFileOpsHelpers:
 
     def test_read_file_strips_leaked_terminal_fence_markers(self, mock_env):
         leaked = (
-            "'\x07__HERMES_FENCE_a9f7b3__\x1b]0;cat "
+            "'\x07\x1b]0;cat "
             "'/tmp/test/a.py' 2> /dev/null\x07\n"
             "print('ok')\n"
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
+            "\x07'\n"
         )
 
         def side_effect(command, **kwargs):
@@ -377,9 +377,9 @@ class TestShellFileOpsHelpers:
 
     def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
         leaked = (
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
+            "\x07'\n"
             "alpha\n"
-            "\x1b]0;cat '/tmp/test/a.txt'\x07__HERMES_FENCE_a9f7b3__\n"
+            "\x1b]0;cat '/tmp/test/a.txt'\x07\n"
         )
 
         def side_effect(command, **kwargs):

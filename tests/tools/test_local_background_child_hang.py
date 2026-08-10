@@ -95,6 +95,24 @@ class TestBackgroundChildDoesNotHang:
         assert result["output"].endswith("END-MARK")
         assert len(result["output"]) > 200000
 
+    def test_bounded_capture_spills_complete_output(self, local_env, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.tool_result_storage.LOCAL_STORAGE_DIR", tmp_path)
+        command = (
+            "python3 -c \"import sys; "
+            "sys.stdout.write('START-MARK\\n' + ('y' * 200000) + '\\nEND-MARK')\""
+        )
+
+        result = local_env.execute(command, timeout=10, bounded_capture=True)
+
+        assert result["returncode"] == 0
+        assert len(result["output"]) <= 50 * 1024
+        assert result["full_chars"] == 200_020
+        full_path = result["full_output_path"]
+        full = open(full_path, encoding="utf-8").read()
+        assert full.startswith("START-MARK")
+        assert full.endswith("END-MARK")
+        assert len(full) == result["full_chars"]
+
 
     def test_utf8_multibyte_across_read_boundary(self, local_env):
         """Multibyte UTF-8 characters straddling a 4096-byte ``os.read()`` boundary

@@ -27,7 +27,10 @@ import logging
 import os
 import re
 import shlex
+import tempfile
+import time
 import uuid
+from pathlib import Path
 
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -39,10 +42,68 @@ logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
+LOCAL_STORAGE_DIR = Path(tempfile.gettempdir()) / "hermes-results"
+SPILL_RETENTION_SECONDS = 7 * 24 * 60 * 60
+HARD_RESULT_SIZE_CHARS = 100_000
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+
+
+def cleanup_local_spills(*, now: float | None = None) -> int:
+    """Delete managed local spill files older than seven days."""
+    cutoff = (time.time() if now is None else now) - SPILL_RETENTION_SECONDS
+    removed = 0
+    try:
+        LOCAL_STORAGE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(LOCAL_STORAGE_DIR, 0o700)
+        for path in LOCAL_STORAGE_DIR.iterdir():
+            if not path.is_file() or path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink()
+            removed += 1
+    except OSError:
+        logger.debug("Could not clean local tool-result spills", exc_info=True)
+    return removed
+
+
+class AtomicSpillWriter:
+    """Stream UTF-8 text to a private temp file, then atomically publish it."""
+
+    def __init__(self, filename: str):
+        cleanup_local_spills()
+        self.path = LOCAL_STORAGE_DIR / _safe_result_filename(filename)
+        fd, tmp = tempfile.mkstemp(
+            dir=LOCAL_STORAGE_DIR,
+            prefix=f".{self.path.stem}.",
+            suffix=".tmp",
+        )
+        os.chmod(tmp, 0o600)
+        self._tmp = Path(tmp)
+        self._file = os.fdopen(fd, "w", encoding="utf-8", newline="")
+
+    def write(self, content: str) -> None:
+        if not isinstance(content, str):
+            raise TypeError("tool-result spill accepts text only")
+        self._file.write(content)
+
+    def commit(self) -> str:
+        self._file.flush()
+        os.fsync(self._file.fileno())
+        self._file.close()
+        os.replace(self._tmp, self.path)
+        os.chmod(self.path, 0o600)
+        return str(self.path)
+
+    def abort(self) -> None:
+        try:
+            self._file.close()
+        finally:
+            try:
+                self._tmp.unlink()
+            except OSError:
+                pass
 
 
 def _resolve_storage_dir(env) -> str:
@@ -110,8 +171,19 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     existing API-body sized limit, which is orders of magnitude larger than
     the exec-arg ceiling.
     """
+    if not isinstance(content, str):
+        raise TypeError("tool-result spill accepts text only")
     storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    temp_path = f"{remote_path}.tmp.{uuid.uuid4().hex}"
+    quoted_dir = shlex.quote(storage_dir)
+    quoted_temp = shlex.quote(temp_path)
+    quoted_path = shlex.quote(remote_path)
+    cmd = (
+        f"umask 077; mkdir -p {quoted_dir} && "
+        f"{{ find {quoted_dir} -type f -mmin +10080 -delete 2>/dev/null || true; }} && "
+        f"cat > {quoted_temp} && chmod 600 {quoted_temp} && "
+        f"mv -f {quoted_temp} {quoted_path}"
+    )
     result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0
 
@@ -166,26 +238,32 @@ def maybe_persist_tool_result(
     Returns:
         Original content if small, or <persisted-output> replacement.
     """
-    effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
-
-    if effective_threshold == float("inf"):
-        return content
+    if not isinstance(content, str):
+        raise TypeError("tool result must be text")
+    configured_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
+    effective_threshold = min(configured_threshold, HARD_RESULT_SIZE_CHARS)
 
     if len(content) <= effective_threshold:
+        _log_result_sizes(tool_name, len(content), len(content), persisted=False)
         return content
 
     storage_dir = _resolve_storage_dir(env)
     remote_path = f"{storage_dir}/{_safe_result_filename(tool_use_id)}"
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
-    if env is not None:
+    # Persisting a read_file result creates an unbounded persist/read loop.
+    # Its head-tail fallback retains pagination metadata without another file.
+    if env is not None and tool_name != "read_file":
         try:
             if _write_to_sandbox(content, remote_path, env):
                 logger.info(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
+                replacement = _build_persisted_message(preview, has_more, len(content), remote_path)
+                replacement = _hard_cap_replacement(replacement)
+                _log_result_sizes(tool_name, len(content), len(replacement), persisted=True)
+                return replacement
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 
@@ -193,10 +271,32 @@ def maybe_persist_tool_result(
         "Inline-truncating large tool result: %s (%d chars, no sandbox write)",
         tool_name, len(content),
     )
-    return (
+    replacement = (
         f"{preview}\n\n"
         f"[Truncated: tool response was {len(content):,} chars. "
         f"Full output could not be saved to sandbox.]"
+    )
+    replacement = _hard_cap_replacement(replacement)
+    _log_result_sizes(tool_name, len(content), len(replacement), persisted=False)
+    return replacement
+
+
+def _hard_cap_replacement(content: str) -> str:
+    if len(content) <= HARD_RESULT_SIZE_CHARS:
+        return content
+    return generate_preview(content, max_chars=HARD_RESULT_SIZE_CHARS)[0]
+
+
+def _log_result_sizes(tool_name: str, full_chars: int, returned_chars: int, *, persisted: bool) -> None:
+    """Emit size-only telemetry; never log result content."""
+    ratio = returned_chars / full_chars if full_chars else 1.0
+    logger.info(
+        "tool_result_size tool=%s full_chars=%d returned_chars=%d ratio=%.4f persisted=%s",
+        tool_name,
+        full_chars,
+        returned_chars,
+        ratio,
+        persisted,
     )
 
 

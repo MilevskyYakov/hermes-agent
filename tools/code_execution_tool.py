@@ -342,7 +342,7 @@ _TOOL_STUBS = {
     ),
     "read_file": (
         "read_file",
-        "path: str, offset: int = 1, limit: int = 2000",
+        "path: str, offset: int = 1, limit: int = 200",
         '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
         '{"path": path, "offset": offset, "limit": limit}',
     ),
@@ -2047,7 +2047,7 @@ _TOOL_DOC_LINES = [
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file",
-     "  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n"
+     "  read_file(path: str, offset: int = 1, limit: int = 200) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
     ("write_file",
      "  write_file(path: str, content: str) -> dict\n"

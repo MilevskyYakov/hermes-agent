@@ -1,5 +1,6 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +10,7 @@ from tools.budget_config import (
     BudgetConfig,
 )
 from tools.tool_result_storage import (
+    AtomicSpillWriter,
     HEREDOC_MARKER,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
@@ -18,6 +20,7 @@ from tools.tool_result_storage import (
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
+    cleanup_local_spills,
     enforce_turn_budget,
     generate_preview,
     maybe_persist_tool_result,
@@ -66,6 +69,9 @@ class TestWriteToSandbox:
         env.execute.assert_called_once()
         cmd = env.execute.call_args[0][0]
         assert "mkdir -p" in cmd
+        assert "umask 077" in cmd
+        assert "chmod 600" in cmd
+        assert "mv -f" in cmd
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).
@@ -112,6 +118,48 @@ class TestWriteToSandbox:
         cmd = env.execute.call_args[0][0]
         # The semicolons must be inside quotes, not acting as command separators
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
+
+    def test_binary_content_rejected(self):
+        env = MagicMock()
+        with pytest.raises(TypeError, match="text only"):
+            _write_to_sandbox(b"\x00binary", "/tmp/hermes-results/x.txt", env)  # type: ignore[arg-type]
+        env.execute.assert_not_called()
+
+
+class TestAtomicSpillWriter:
+    def test_unicode_atomic_write_and_private_permissions(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.tool_result_storage.LOCAL_STORAGE_DIR", tmp_path)
+        writer = AtomicSpillWriter("unicode")
+        writer.write("Привет 🌍\n")
+        path = writer.commit()
+
+        assert open(path, encoding="utf-8").read() == "Привет 🌍\n"
+        assert os.stat(path).st_mode & 0o777 == 0o600
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_cleanup_removes_only_expired_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.tool_result_storage.LOCAL_STORAGE_DIR", tmp_path)
+        old = tmp_path / "old.txt"
+        fresh = tmp_path / "fresh.txt"
+        old.write_text("old")
+        fresh.write_text("fresh")
+        os.utime(old, (1, 1))
+
+        assert cleanup_local_spills(now=8 * 24 * 60 * 60) == 1
+        assert not old.exists()
+        assert fresh.exists()
+
+    def test_failed_atomic_publish_leaves_no_temp(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.tool_result_storage.LOCAL_STORAGE_DIR", tmp_path)
+        writer = AtomicSpillWriter("failed")
+        writer.write("complete")
+        with patch("tools.tool_result_storage.os.replace", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                writer.commit()
+        writer.abort()
+
+        assert not list(tmp_path.glob("*.tmp"))
+        assert not (tmp_path / "failed.txt").exists()
 
 
 class TestResolveStorageDir:
@@ -229,14 +277,11 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         cmd = env.execute.call_args[0][0]
-        target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
-
         assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
         assert "/tmp/hermes-results/../" not in result
-        assert target.startswith("/tmp/hermes-results/outside_whoami_x_")
-        assert "/../" not in target
-        assert "$(whoami)" not in target
-        assert ";" not in target
+        assert "/tmp/hermes-results/outside_whoami_x_" in cmd
+        assert "/../" not in cmd
+        assert "$(whoami)" not in cmd
 
 
     def test_threshold_zero_forces_persist(self):
@@ -297,6 +342,42 @@ class TestPerToolThresholds:
     def test_registry_has_get_max_result_size(self):
         from tools.registry import registry
         assert hasattr(registry, "get_max_result_size")
+
+    def test_unregistered_tool_still_hits_global_outer_cap(self):
+        content = "x" * 100_001
+
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="forgotten_tool",
+            tool_use_id="tc_forgotten",
+            env=None,
+        )
+
+        assert len(result) < 100_000
+        assert "tool response was 100,001 chars" in result
+
+    def test_config_cannot_raise_global_outer_cap(self):
+        result = maybe_persist_tool_result(
+            content="x" * 100_001,
+            tool_name="forgotten_tool",
+            tool_use_id="tc_configured",
+            env=None,
+            config=BudgetConfig(default_result_size=500_000, preview_size=500_000),
+        )
+
+        assert len(result) <= 100_000
+
+    def test_read_file_hard_cap_does_not_create_persist_read_loop(self):
+        env = MagicMock()
+        result = maybe_persist_tool_result(
+            content="x" * 100_001,
+            tool_name="read_file",
+            tool_use_id="tc_read",
+            env=env,
+        )
+
+        assert "Truncated" in result
+        env.execute.assert_not_called()
 
 
     def test_read_file_registry_cap_is_100k(self):
