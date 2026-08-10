@@ -476,6 +476,14 @@ def load_cli_config() -> Dict[str, Any]:
             "checkpoint_calls": 50,
             "transition_calls": 100,
         },
+        "model_router": {
+            "enabled": False,
+            "mode": "shadow",
+            "confidence_threshold": 0.8,
+            "luna_call_limit": 4,
+            "luna_model": "gpt-5.6-luna",
+            "sol_model": "gpt-5.6-sol",
+        },
         "agent": {
             "max_turns": 500,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -520,6 +528,13 @@ def load_cli_config() -> Dict[str, Any]:
             "max_tool_calls": 50,  # Max RPC tool calls per execution
         },
         "auxiliary": {
+            "model_router": {
+                "provider": "openai-codex",
+                "model": "gpt-5.6-luna",
+                "timeout": 60,
+                "extra_body": {},
+                "reasoning_effort": "max",
+            },
             "vision": {
                 "provider": "auto",
                 "model": "",
@@ -14401,6 +14416,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
+        model_route = turn_route.get("model_route")
+        if model_route:
+            if model_route.get("proposal_required"):
+                from agent.model_router import proposal_response
+
+                return proposal_response(model_route)
+            _cprint(model_route["visible_line"])
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
@@ -14411,11 +14433,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
+            reasoning_override=turn_route.get("reasoning_config"),
         ):
             return None
         agent = self.agent
         if agent is None:
             return None
+        if model_route:
+            from agent.model_router import attach_route
+
+            attach_route(agent, model_route)
 
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters

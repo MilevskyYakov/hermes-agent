@@ -88,6 +88,18 @@ def test_new_session_bootstraps_and_full_escape_hatch_restores_configured_tools(
     }
 
 
+def test_luna_tool_expansion_requests_fresh_sol_continuation():
+    agent = _agent()
+    start_session_bootstrap(agent, has_history=False)
+    agent._model_route_tier = "luna_max"
+
+    result = expand_full_toolset(agent, "scope became broad")
+
+    assert '"escalation": "sol_medium"' in result
+    assert agent._model_escalation_requested is True
+    assert agent._session_toolset_preset == "bootstrap"
+
+
 def test_core_selection_reuses_existing_router_and_never_widens_configured_surface():
     agent = _agent()
     start_session_bootstrap(agent, has_history=False)
