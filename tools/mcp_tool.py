@@ -6486,10 +6486,15 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Session preset changes and registry refreshes may race at a tool boundary.
+    # Share the lightweight session lock so neither path snapshots the other's
+    # half-published tool pair.
+    from agent.session_toolsets import SESSION_TOOLSET_LOCK
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.
-    with _agent_tools_lock:
+    with _agent_tools_lock, SESSION_TOOLSET_LOCK:
         # Defensive: the published generation should be an int, but tolerate an
         # agent that never set it (or set a non-int, e.g. a test mock) rather
         # than throwing TypeError on the comparison and silently failing the
@@ -6516,7 +6521,14 @@ def refresh_agent_mcp_tools(
             engine_names.clear()
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        return new_names - current
+        added = new_names - current
+        try:
+            from agent.session_toolsets import restore_preset_after_registry_refresh
+
+            restore_preset_after_registry_refresh(agent, current)
+        except Exception:
+            logger.debug("session toolset restore after registry refresh skipped", exc_info=True)
+        return added
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
