@@ -919,8 +919,15 @@ def sync_credential_pool_entry_id(agent) -> None:
             if pool is not None
             else None
         )
+        alias_for = getattr(pool, "account_alias_for_entry_id", None)
+        agent._codex_account_alias = (
+            alias_for(agent._credential_pool_entry_id)
+            if callable(alias_for) and getattr(pool, "provider", None) == "openai-codex"
+            else None
+        )
     except Exception:
         agent._credential_pool_entry_id = None
+        agent._codex_account_alias = None
 
 
 def recover_with_credential_pool(

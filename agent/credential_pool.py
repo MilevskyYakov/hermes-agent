@@ -722,6 +722,19 @@ class CredentialPool:
         with self._lock:
             return self._current_unlocked()
 
+    def _account_aliases_unlocked(self) -> Dict[str, str]:
+        if self.provider != "openai-codex" or len(self._entries) != 2:
+            return {}
+        return {
+            entry.id: alias
+            for entry, alias in zip(self._entries, ("A", "B"))
+        }
+
+    def account_alias_for_entry_id(self, entry_id: Optional[str]) -> Optional[str]:
+        """Return only the local A/B alias; never expose credential metadata."""
+        with self._lock:
+            return self._account_aliases_unlocked().get(entry_id or "")
+
     def entry_id_for_api_key(self, api_key_hint: Any = None) -> Optional[str]:
         """Return the stable id for the runtime credential in use.
 
@@ -1991,6 +2004,24 @@ class CredentialPool:
         # so a later re-exhaustion logs immediately rather than being silenced
         # by a window opened during the previous empty stretch.
         self._last_no_entries_log_at = None
+
+        aliases = self._account_aliases_unlocked()
+        if aliases:
+            current = self._current_unlocked()
+            if current is not None and any(entry.id == current.id for entry in available):
+                return current
+            from agent.codex_account_usage import load_weekly_account_credits
+
+            credits = load_weekly_account_credits()
+            entry = min(
+                available,
+                key=lambda candidate: (
+                    credits.get(aliases[candidate.id], 0.0),
+                    candidate.priority,
+                ),
+            )
+            self._current_id = entry.id
+            return entry
 
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)

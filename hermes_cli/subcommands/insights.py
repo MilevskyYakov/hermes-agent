@@ -22,4 +22,9 @@ def build_insights_parser(subparsers, *, cmd_insights: Callable) -> None:
     insights_parser.add_argument(
         "--source", help="Filter by platform (cli, telegram, discord, etc.)"
     )
+    insights_parser.add_argument(
+        "--accounts",
+        action="store_true",
+        help="Show local weekly Codex usage split by pseudonymous account A/B",
+    )
     insights_parser.set_defaults(func=cmd_insights)

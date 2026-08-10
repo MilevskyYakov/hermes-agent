@@ -11407,6 +11407,15 @@ def cmd_insights(args):
         from agent.insights import InsightsEngine
 
         db = SessionDB()
+        if getattr(args, "accounts", False):
+            from agent.codex_account_usage import (
+                format_weekly_account_usage,
+                weekly_account_usage,
+            )
+
+            print(format_weekly_account_usage(weekly_account_usage(db._conn)))
+            db.close()
+            return
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))

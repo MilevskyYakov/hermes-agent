@@ -6204,7 +6204,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
     _TOKEN_DELTA_ROUTE_FIELDS = (
         "model", "cost_status", "cost_source", "pricing_version",
-        "billing_provider", "billing_base_url", "billing_mode",
+        "billing_provider", "billing_base_url", "billing_mode", "account_alias",
     )
 
     def queue_token_counts(self, session_id: str, **kwargs) -> None:
@@ -6454,6 +6454,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         billing_provider: Optional[str] = None,
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
+        account_alias: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
     ) -> None:
@@ -6593,6 +6594,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     billing_provider=billing_provider,
                     billing_base_url=billing_base_url,
                     billing_mode=billing_mode,
+                    account_alias=account_alias,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read_tokens,
@@ -6626,6 +6628,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cost_source: Optional[str],
         api_call_count: int,
         task: str = "",
+        account_alias: Optional[str] = None,
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage.
 
@@ -6707,6 +6710,36 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 now,
             ),
         )
+        if eff_provider == "openai-codex" and account_alias in {"A", "B"}:
+            from agent.codex_account_usage import week_start_timestamp
+
+            week_start = week_start_timestamp(now)
+            conn.execute(
+                """INSERT INTO codex_account_usage (
+                       session_id, account_alias, week_start, model,
+                       api_call_count, input_tokens, output_tokens,
+                       cache_read_tokens, first_seen, last_seen
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(session_id, account_alias, week_start, model)
+                   DO UPDATE SET
+                       api_call_count = api_call_count + excluded.api_call_count,
+                       input_tokens = input_tokens + excluded.input_tokens,
+                       output_tokens = output_tokens + excluded.output_tokens,
+                       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                       last_seen = excluded.last_seen""",
+                (
+                    session_id,
+                    account_alias,
+                    week_start,
+                    eff_model,
+                    api_call_count or 0,
+                    input_tokens or 0,
+                    output_tokens or 0,
+                    cache_read_tokens or 0,
+                    now,
+                    now,
+                ),
+            )
 
     def ensure_session(
         self,
