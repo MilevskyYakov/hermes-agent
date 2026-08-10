@@ -50,6 +50,7 @@ from agent.prompt_builder import (
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
+from agent.skill_utils import get_always_on_skill_names
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 
@@ -438,6 +439,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         )
     else:
         skills_prompt = ""
+
+    always_on_skills = get_always_on_skill_names()
+    if always_on_skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        always_on_prompt, _loaded, missing = build_preloaded_skills_prompt(
+            always_on_skills,
+            task_id=getattr(agent, "session_id", None),
+            always_on=True,
+        )
+        if missing:
+            logger.warning("Configured always-on skills not found or disabled: %s", ", ".join(missing))
+        if always_on_prompt:
+            stable_parts.append(always_on_prompt)
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt

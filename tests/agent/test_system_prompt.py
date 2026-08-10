@@ -130,6 +130,28 @@ def test_build_system_prompt_records_stable_prefix():
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
 
 
+def test_always_on_skill_is_part_of_stable_prompt(monkeypatch):
+    agent = _make_agent(session_id="session-123")
+    monkeypatch.setattr("agent.system_prompt.get_always_on_skill_names", lambda: ["caveman"])
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch(
+            "agent.skill_commands.build_preloaded_skills_prompt",
+            return_value=("CAVEMAN FULL GUIDANCE", ["caveman"], []),
+        ) as build_always_on,
+    ):
+        parts = build_system_prompt_parts(agent)
+
+    assert "CAVEMAN FULL GUIDANCE" in parts["stable"]
+    build_always_on.assert_called_once_with(
+        ["caveman"], task_id="session-123", always_on=True
+    )
+
+
 def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     """The cache split must not reorder the stored coding prompt."""
     import agent.system_prompt as system_prompt

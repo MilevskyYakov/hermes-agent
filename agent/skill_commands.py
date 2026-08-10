@@ -775,6 +775,8 @@ def build_stacked_skill_invocation_message(
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,
+    *,
+    always_on: bool = False,
 ) -> tuple[str, list[str], list[str]]:
     """Load one or more skills for session-wide CLI/TUI preloading.
 
@@ -822,11 +824,18 @@ def build_preloaded_skills_prompt(
         except Exception:
             pass  # Non-critical
 
-        activation_note = (
-            f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
-            "preloaded. Treat its instructions as active guidance for the duration of this "
-            "session unless the user overrides them.]"
-        )
+        if always_on:
+            activation_note = (
+                f'[IMPORTANT: The "{skill_name}" skill is configured as always-on. Treat its '
+                "instructions as active guidance for every response in this session unless the "
+                "user overrides them.]"
+            )
+        else:
+            activation_note = (
+                f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
+                "preloaded. Treat its instructions as active guidance for the duration of this "
+                "session unless the user overrides them.]"
+            )
         prompt_parts.append(
             _build_skill_message(
                 loaded_skill,

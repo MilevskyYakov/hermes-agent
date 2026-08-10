@@ -130,6 +130,17 @@ class TestGetDisabledSkillNames:
         assert result == {"tg-skill"}
 
 
+def test_get_always_on_skill_names_preserves_order_and_deduplicates(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n  always_on: [caveman, concise, caveman]\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.skill_utils import get_always_on_skill_names
+
+    assert get_always_on_skill_names() == ["caveman", "concise"]
+
+
 # ---------------------------------------------------------------------------
 # _find_all_skills — disabled filtering
 # ---------------------------------------------------------------------------

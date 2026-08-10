@@ -50,6 +50,18 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
     return external_category
 
 
+def test_always_on_prompt_uses_session_wide_activation_note(tmp_path):
+    _make_skill(tmp_path, "caveman", body="Default: **full**. Off: stop caveman.")
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        prompt, loaded, missing = build_preloaded_skills_prompt(["caveman"], always_on=True)
+
+    assert loaded == ["caveman"]
+    assert missing == []
+    assert '"caveman" skill is configured as always-on' in prompt
+    assert "Default: **full**" in prompt
+
+
 class TestScanSkillCommands:
 
 
