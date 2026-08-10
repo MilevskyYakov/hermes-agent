@@ -82,6 +82,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                     billing_provider=agent.provider,
                     billing_base_url=agent.base_url,
                     billing_mode="subscription_included",
+                    account_alias=getattr(agent, "_codex_account_alias", None),
                     api_call_count=1,
                 )
             except Exception as exc:
@@ -173,6 +174,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 billing_mode="subscription_included"
                 if cost_result.status == "included" else None,
                 model=agent.model,
+                account_alias=getattr(agent, "_codex_account_alias", None),
                 api_call_count=1,
             )
         except Exception as exc:

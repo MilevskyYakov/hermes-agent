@@ -237,6 +237,20 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+CREATE TABLE IF NOT EXISTS codex_account_usage (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    account_alias TEXT NOT NULL CHECK (account_alias IN ('A', 'B')),
+    week_start REAL NOT NULL,
+    model TEXT NOT NULL,
+    api_call_count INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    first_seen REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    PRIMARY KEY (session_id, account_alias, week_start, model)
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -287,6 +301,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
+CREATE INDEX IF NOT EXISTS idx_codex_account_usage_week ON codex_account_usage(week_start, account_alias);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """
