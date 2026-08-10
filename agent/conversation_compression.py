@@ -2170,6 +2170,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    force_session_rotation: bool = False,
     defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None,
 ) -> Tuple[list, str]:
@@ -2189,6 +2190,9 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        force_session_rotation: Create a linked continuation even when normal
+            compression is configured in-place. Used only by safe long-task
+            lifecycle boundaries.
         defer_context_engine_notification: Delay the existing context-engine
             hook until a manual host commits its outer history transaction.
         commit_fence: Optional cooperative fence for executor callers that
@@ -2319,7 +2323,7 @@ def compress_context(
     # Default True matches DEFAULT_CONFIG / #38763. A missing attribute must
     # NOT fall back to rotation mode — that re-enables the pre-lease drift
     # path and can wedge busy sessions that never set the flag.
-    in_place = bool(getattr(agent, "compression_in_place", True))
+    in_place = bool(getattr(agent, "compression_in_place", True)) and not force_session_rotation
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
     compacted_in_place = False

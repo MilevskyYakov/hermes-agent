@@ -7580,6 +7580,7 @@ class AIAgent:
         task_id: str = "default",
         focus_topic: str = None,
         force: bool = False,
+        force_session_rotation: bool = False,
         defer_context_engine_notification: bool = False,
         commit_fence=None,
     ) -> tuple:
@@ -7645,6 +7646,7 @@ class AIAgent:
                     approx_tokens=approx_tokens, task_id=task_id,
                     focus_topic=focus_topic,
                     force=force,
+                    force_session_rotation=force_session_rotation,
                     defer_context_engine_notification=(
                         defer_context_engine_notification
                     ),

@@ -2184,6 +2184,24 @@ def init_agent(
         0, int(_compression_cfg.get("idle_compact_after_seconds", 0))
     )
 
+    _lifecycle_cfg = _agent_cfg.get("session_lifecycle", {})
+    if not isinstance(_lifecycle_cfg, dict):
+        _lifecycle_cfg = {}
+    agent.session_lifecycle_enabled = is_truthy_value(
+        _lifecycle_cfg.get("enabled"), default=False
+    )
+    agent.session_lifecycle_checkpoint_calls = max(
+        1, int(_lifecycle_cfg.get("checkpoint_calls", 50) or 50)
+    )
+    agent.session_lifecycle_transition_calls = max(
+        agent.session_lifecycle_checkpoint_calls,
+        int(_lifecycle_cfg.get("transition_calls", 100) or 100),
+    )
+    agent._lifecycle_checkpoint_written = False
+    agent._lifecycle_persisted_calls = None
+    agent._lifecycle_call_offset = 0
+    agent._lifecycle_unsafe_operation = None
+
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
     # /models, so the startup feasibility check needs the config hint.

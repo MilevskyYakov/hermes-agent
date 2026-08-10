@@ -33,6 +33,13 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    "session_lifecycle": {
+        # Pilot rollback toggle. Enable to checkpoint at 50 model calls and
+        # continue in a fresh linked session after 100 at a safe boundary.
+        "enabled": False,
+        "checkpoint_calls": 50,
+        "transition_calls": 100,
+    },
     "agent": {
         "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).
