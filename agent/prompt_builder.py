@@ -1347,9 +1347,8 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2: entries gained org provenance fields (org_id/org_author/rel_dir) for M2
-# org-shared skills; older snapshots are discarded and rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+# v3: entries include portable activation metadata for routing labels.
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1486,6 +1485,11 @@ def _build_snapshot_entry(
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
     }
+    metadata = frontmatter.get("metadata")
+    gerda = metadata.get("gerda") if isinstance(metadata, dict) else None
+    activation = gerda.get("activation") if isinstance(gerda, dict) else None
+    if isinstance(activation, dict):
+        entry["activation"] = activation
     if org_id:
         entry["org_id"] = org_id
         # Author from the pull-time provenance sidecar (token-verified at
@@ -1699,6 +1703,17 @@ def build_skills_system_prompt(
     for entry in visible_entries:
         fm = entry.get("frontmatter_name") or entry.get("skill_name") or ""
         desc = entry.get("description", "")
+        activation = entry.get("activation") or {}
+        if activation.get("auto") == "core":
+            desc = f"[core] {desc}".strip()
+        elif activation.get("always"):
+            desc = f"[capability] {desc}".strip()
+        elif activation.get("auto") == "none" and (
+            activation.get("direct") or activation.get("slash")
+        ):
+            desc = f"[manual] {desc}".strip()
+        elif activation.get("dependency"):
+            desc = f"[capability] {desc}".strip()
         org_id = entry.get("org_id")
         collided = len(name_owners.get(fm, set())) > 1
         if org_id:
@@ -1835,10 +1850,13 @@ def build_skills_system_prompt(
 
         result = (
             "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
+            "Before replying, scan the skills below. Select at most one matching [core] skill "
+            "for the current user turn and load it with skill_view(name). Exact slash/direct "
+            "invocation of a [manual] skill wins and manual skills must never be auto-loaded. "
+            "A [capability] may support the selected workflow without becoming a second core; "
+            "load it with skill_view(name, as_dependency=true). "
+            "Do not load the same skill twice in one session unless its result was explicitly "
+            "marked [SKILL_PRUNED]. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
             "and proven workflows that outperform general-purpose approaches. Load the skill "
             "even if you think you could handle the task with basic tools like web_search or terminal. "
