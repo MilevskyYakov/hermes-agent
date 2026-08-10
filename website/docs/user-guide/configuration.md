@@ -1405,6 +1405,35 @@ Compression and fallback model settings are config.yaml-only.
 Run `hermes config` to see your current auxiliary model settings. Overrides only show up when they differ from the defaults.
 :::
 
+## First-task Model Router
+
+The optional router classifies only the first task in a new CLI, TUI, or gateway
+session. It is disabled by default. Shadow mode records Luna's proposed tier and
+toolset while Sol Medium still executes the task; disabling the toggle restores
+the normal single-model path immediately.
+
+```yaml
+model_router:
+  enabled: true
+  mode: shadow            # shadow | live | off
+  confidence_threshold: 0.8
+  luna_call_limit: 4      # rotate to fresh Sol session when bounded work grows
+  luna_model: gpt-5.6-luna
+  sol_model: gpt-5.6-sol
+
+auxiliary:
+  model_router:
+    provider: openai-codex
+    model: gpt-5.6-luna
+    reasoning_effort: max
+    timeout: 60
+```
+
+`live` is an explicit cutover mode. Low-confidence or invalid routes fall back
+to Sol Medium. Sol Max and Sol Ultra remain proposals until the user confirms;
+a Luna task that outgrows its scoped toolset rotates through a structured
+handoff into a fresh linked Sol Medium session.
+
 ## Reasoning Effort
 
 Control how much "thinking" the model does before responding:

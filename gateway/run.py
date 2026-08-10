@@ -4411,6 +4411,22 @@ class TurnRunner:
             )
 
         turn_route = self._runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        model_route = turn_route.get("model_route")
+        if model_route and model_route.get("proposal_required"):
+            from agent.model_router import proposal_response
+
+            final_response = proposal_response(model_route)
+            result = {
+                "final_response": final_response,
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+                "completed": False,
+            }
+            ctx.result_holder[0] = result
+            return final_response
+        if model_route:
+            _interim_assistant_cb(model_route["visible_line"])
 
         # Check agent cache — reuse the AIAgent from the previous message
         # in this session to preserve the frozen system prompt and tool
@@ -4636,7 +4652,7 @@ class TurnRunner:
                 disabled_toolsets=ctx.disabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._runner._prefill_messages or None,
-                reasoning_config=reasoning_config,
+                reasoning_config=turn_route.get("reasoning_config") or reasoning_config or {},
                 service_tier=self._runner._service_tier,
                 request_overrides=turn_route.get("request_overrides"),
                 providers_allowed=pr.get("only"),
@@ -4671,6 +4687,11 @@ class TurnRunner:
                     )
                     self._runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
+
+        if turn_route.get("model_route"):
+            from agent.model_router import attach_route
+
+            attach_route(agent, turn_route["model_route"])
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
@@ -6957,13 +6978,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
+        try:
+            from gateway.session_context import get_session_env
+
+            session_id = get_session_env("HERMES_SESSION_ID", "")
+        except Exception:
+            session_id = ""
+        routed_sessions = getattr(self, "_model_routed_sessions", None)
+        if routed_sessions is None:
+            routed_sessions = self._model_routed_sessions = set()
+        if session_id and session_id not in routed_sessions:
+            routed_sessions.add(session_id)
+            try:
+                from agent.model_router import apply_route, route_first_task
+                from hermes_cli.config import load_config
+
+                model_route = route_first_task(
+                    user_message,
+                    config=load_config(),
+                    main_model=model,
+                    main_runtime=runtime,
+                    session_id=session_id,
+                )
+                route = apply_route(route, model_route)
+                route["signature"] = (
+                    route["model"],
+                    runtime["provider"],
+                    runtime["requested_provider"],
+                    runtime["base_url"],
+                    runtime["api_mode"],
+                    runtime["command"],
+                    tuple(runtime["args"]),
+                    (route.get("reasoning_config") or {}).get("effort"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Model router failed closed to primary route: %s", type(exc).__name__
+                )
+
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
             route["request_overrides"] = {}
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            route_model = route.get("model")
+            overrides = resolve_fast_mode_overrides(
+                route_model if isinstance(route_model, str) else None
+            )
         except Exception:
             overrides = None
         route["request_overrides"] = overrides or {}
@@ -18793,7 +18855,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
-                    reasoning_config=reasoning_config,
+                    reasoning_config=turn_route.get("reasoning_config") or reasoning_config or {},
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),

@@ -269,3 +269,49 @@ def transition_if_due(
     agent._lifecycle_call_offset = int(getattr(agent, "session_api_calls", 0) or 0)
     agent._emit_status("Long task checkpoint complete — continuing in a fresh session.")
     return compressed, new_system_message, True
+
+
+def transition_for_model_escalation(
+    agent: Any,
+    messages: list[dict[str, Any]],
+    system_message: str,
+    task_id: str,
+) -> tuple[list[dict[str, Any]], str, bool]:
+    """Move a Luna task to Sol only after a fresh linked-session handoff."""
+    if not getattr(agent, "_model_escalation_requested", False):
+        return messages, system_message, False
+    if not is_safe_boundary(agent, messages, task_id):
+        return messages, system_message, False
+
+    handoff = _merge_previous_handoff(agent, build_handoff(messages, task_id))
+    validate_handoff(handoff)
+    calls = _model_call_count(agent)
+    _persist_handoff(agent, handoff, kind="model_escalation_pending", calls=calls)
+    old_session_id = agent.session_id
+    compressed, new_system_message = agent._compress_context(
+        messages,
+        system_message,
+        task_id=task_id,
+        focus_topic="Preserve the structured handoff and continue the same task on Sol.",
+        force_session_rotation=True,
+    )
+    if agent.session_id == old_session_id:
+        return messages, system_message, False
+
+    route = getattr(agent, "_model_route", {}) or {}
+    agent.switch_model(
+        route.get("sol_model") or "gpt-5.6-sol",
+        getattr(agent, "provider", "openai-codex"),
+        getattr(agent, "api_key", ""),
+        getattr(agent, "base_url", ""),
+        getattr(agent, "api_mode", ""),
+    )
+    agent.reasoning_config = {"effort": "medium"}
+    agent._model_route_tier = "sol_medium"
+    agent._model_escalation_requested = False
+    agent._lifecycle_checkpoint_written = False
+    agent._lifecycle_persisted_calls = 0
+    agent._lifecycle_call_offset = int(getattr(agent, "session_api_calls", 0) or 0)
+    _persist_handoff(agent, handoff, kind="model_escalated", calls=calls)
+    agent._emit_status("Task expanded — continuing in a fresh linked Sol Medium session.")
+    return compressed, new_system_message, True

@@ -1401,6 +1401,23 @@ def run_conversation(
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         try:
+            from agent.model_router import request_luna_escalation_if_due
+            from agent.session_lifecycle import transition_for_model_escalation
+
+            request_luna_escalation_if_due(agent)
+            messages, active_system_prompt, _model_rotated = transition_for_model_escalation(
+                agent, messages, active_system_prompt, effective_task_id
+            )
+            if _model_rotated:
+                conversation_history = list(messages)
+                current_turn_user_idx = reanchor_current_turn_user_idx(
+                    messages, user_message
+                )
+                agent._persist_user_message_idx = current_turn_user_idx
+        except Exception:
+            logger.warning("model escalation transition failed", exc_info=True)
+
+        try:
             from agent.session_lifecycle import transition_if_due
 
             messages, active_system_prompt, _lifecycle_rotated = transition_if_due(

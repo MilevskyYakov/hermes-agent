@@ -35,6 +35,16 @@ DEFAULT_CONFIG = {
         "checkpoint_calls": 50,
         "transition_calls": 100,
     },
+    "model_router": {
+        # Rollback toggle. Shadow records Luna's proposal while Sol Medium
+        # remains the executor; live mode requires an explicit operator cutover.
+        "enabled": False,
+        "mode": "shadow",  # shadow | live | off
+        "confidence_threshold": 0.8,
+        "luna_call_limit": 4,
+        "luna_model": "gpt-5.6-luna",
+        "sol_model": "gpt-5.6-sol",
+    },
     "agent": {
         "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -830,6 +840,13 @@ DEFAULT_CONFIG = {
         # case-insensitive substrings matched against the endpoint URL;
         # copilot.tencent.com is always treated as stream-only.
         "stream_only_base_urls": [],
+        "model_router": {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-luna",
+            "timeout": 60,
+            "extra_body": {},
+            "reasoning_effort": "max",
+        },
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
