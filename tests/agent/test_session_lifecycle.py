@@ -8,6 +8,7 @@ from agent.session_lifecycle import (
     build_handoff,
     checkpoint_if_due,
     is_safe_boundary,
+    transition_for_model_escalation,
     transition_if_due,
     validate_handoff,
 )
@@ -147,3 +148,68 @@ def test_transition_rotates_on_safe_boundary_and_preserves_identity(monkeypatch)
     assert agent.session_api_calls == 2
     assert agent._lifecycle_call_offset == 2
     assert [row[0] for row in persisted] == ["parent", "child"]
+
+
+def test_luna_escalation_rotates_then_switches_to_sol(monkeypatch):
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.has_active_processes",
+        lambda _task: False,
+    )
+    persisted = []
+    switched = []
+
+    class DB:
+        def flush_token_counts(self):
+            pass
+
+        def get_session(self, _session_id):
+            return {"api_call_count": 1, "model_config": None}
+
+        def update_session_meta(self, session_id, model_config, model=None):
+            persisted.append((session_id, model_config, model))
+
+    def compress(messages, system_message, **kwargs):
+        assert kwargs["force_session_rotation"] is True
+        agent.session_id = "sol-child"
+        return list(messages), system_message
+
+    def switch_model(*args):
+        switched.append(args)
+        agent.model = args[0]
+
+    agent = SimpleNamespace(
+        _model_escalation_requested=True,
+        _model_route={"sol_model": "gpt-5.6-sol"},
+        _model_route_tier="luna_max",
+        session_api_calls=1,
+        session_id="luna-parent",
+        model="gpt-5.6-luna",
+        provider="openai-codex",
+        api_key="",
+        base_url="",
+        api_mode="codex_responses",
+        reasoning_config={"effort": "max"},
+        _session_db=DB(),
+        _session_init_model_config={},
+        _executing_tools=False,
+        _lifecycle_unsafe_operation=None,
+        _active_compression_lock_holder=None,
+        _compress_context=compress,
+        switch_model=switch_model,
+        _emit_status=lambda _message: None,
+    )
+
+    _, _, rotated = transition_for_model_escalation(
+        agent,
+        [{"role": "user", "content": "continue this task"}],
+        "system",
+        "task-317",
+    )
+
+    assert rotated is True
+    assert agent.session_id == "sol-child"
+    assert agent.model == "gpt-5.6-sol"
+    assert agent.reasoning_config == {"effort": "medium"}
+    assert agent._model_route_tier == "sol_medium"
+    assert switched[0][0] == "gpt-5.6-sol"
+    assert [row[0] for row in persisted] == ["luna-parent", "sol-child"]

@@ -221,6 +221,14 @@ def select_core_preset(agent: Any, core_name: str) -> bool:
 
 def expand_full_toolset(agent: Any, reason: str = "") -> str:
     """Restore the user's original configured tools without widening policy."""
+    if getattr(agent, "_model_route_tier", "") == "luna_max":
+        agent._model_escalation_requested = True
+        agent._model_escalation_reason = str(reason or "tool expansion required")[:200]
+        return json.dumps({
+            "success": True,
+            "escalation": "sol_medium",
+            "message": "Continuing in a fresh linked Sol session with a structured handoff.",
+        }, ensure_ascii=False)
     full = _full_tools(agent)
     _publish(agent, full, "full")
     return json.dumps({
