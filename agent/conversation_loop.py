@@ -6913,7 +6913,16 @@ def run_conversation(
                     except Exception:
                         pass
 
-                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                from tools.skills_tool import skill_routing_context
+
+                with skill_routing_context(
+                    messages,
+                    agent.session_id or "",
+                    getattr(agent, "_current_turn_id", "") or effective_task_id,
+                ):
+                    agent._execute_tool_calls(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
 
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send
