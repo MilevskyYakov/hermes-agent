@@ -627,6 +627,18 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
 
+### Always-on skills
+
+Use `skills.always_on` for skills whose instructions must apply to every response in a new session, without requiring a slash command:
+
+```yaml
+skills:
+  always_on:
+    - concise-style
+```
+
+Always-on skill content is loaded into the cached system prompt once per session on CLI, TUI, desktop, gateway, and cron surfaces. A name also listed under `skills.disabled` is not loaded. Keep this list small: each skill adds its full instructions to every session's context.
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

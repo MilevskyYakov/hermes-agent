@@ -455,6 +455,20 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return global_disabled
 
 
+def get_always_on_skill_names() -> List[str]:
+    """Return configured session-wide skills in declared order."""
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+    if not isinstance(skills_cfg, dict):
+        return []
+    values = skills_cfg.get("always_on")
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
 def _normalize_string_set(values) -> Set[str]:
     if values is None:
         return set()
