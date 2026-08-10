@@ -164,6 +164,39 @@ class TestInPlaceCompaction:
 
 
 class TestRotationFallbackWhenFlagOff:
+    def test_lifecycle_boundary_forces_rotation_without_changing_default(self):
+        """Long-task continuation rotates even when normal compaction is in-place."""
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260811_100000_lifecycle"
+            _seed(db, sid, "long-task")
+            db.update_token_counts(sid, input_tokens=500, api_call_count=100)
+            agent = _make_agent(db, sid, in_place=True)
+
+            compress_context(
+                agent,
+                [{"role": "user", "content": f"m{i}"} for i in range(8)],
+                approx_tokens=100_000,
+                system_message="sys",
+                force_session_rotation=True,
+            )
+
+            assert agent.compression_in_place is True
+            assert agent.session_id != sid
+            assert db.get_session(sid)["end_reason"] == "compression"
+            assert db.get_session(agent.session_id)["parent_session_id"] == sid
+            db.update_token_counts(agent.session_id, input_tokens=25, api_call_count=1)
+            db.flush_token_counts()
+            usage = db._conn.execute(
+                "SELECT SUM(input_tokens) AS tokens, SUM(api_call_count) AS calls "
+                "FROM sessions WHERE id IN (?, ?)",
+                (sid, agent.session_id),
+            ).fetchone()
+            assert dict(usage) == {"tokens": 525, "calls": 101}
+
     def test_rotation_when_flag_off(self):
         """Rotation is now the OPT-OUT fallback (default flipped to in-place in
         #38763). With in_place=False explicitly set, legacy rotation is

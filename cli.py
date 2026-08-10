@@ -471,6 +471,11 @@ def load_cli_config() -> Dict[str, Any]:
             "threshold": 0.50,    # Compress at 50% of model's context limit
             "min_tail_user_messages": 1,  # Real user messages guaranteed in the tail (1 = existing single anchor)
         },
+        "session_lifecycle": {
+            "enabled": False,
+            "checkpoint_calls": 50,
+            "transition_calls": 100,
+        },
         "agent": {
             "max_turns": 500,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,

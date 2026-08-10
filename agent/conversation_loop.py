@@ -1401,6 +1401,21 @@ def run_conversation(
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         try:
+            from agent.session_lifecycle import transition_if_due
+
+            messages, active_system_prompt, _lifecycle_rotated = transition_if_due(
+                agent, messages, active_system_prompt, effective_task_id
+            )
+            if _lifecycle_rotated:
+                conversation_history = list(messages)
+                current_turn_user_idx = reanchor_current_turn_user_idx(
+                    messages, user_message
+                )
+                agent._persist_user_message_idx = current_turn_user_idx
+        except Exception:
+            logger.warning("safe session lifecycle transition failed", exc_info=True)
+
+        try:
             from agent.session_toolsets import rebuild_prompt_if_dirty
 
             rebuilt_prompt = rebuild_prompt_if_dirty(agent, system_message)
@@ -3320,6 +3335,13 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+                    try:
+                        from agent.session_lifecycle import checkpoint_if_due
+
+                        checkpoint_if_due(agent, messages, effective_task_id)
+                    except Exception:
+                        logger.warning("session lifecycle checkpoint failed", exc_info=True)
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""
