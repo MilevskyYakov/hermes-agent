@@ -683,7 +683,7 @@ class TestLargeFileHint(unittest.TestCase):
         fake = _make_fake_ops(content=content, total_lines=10000, file_size=600_000)
         # Make to_dict return truncated=True
         orig_read = fake.read_file
-        def patched_read(path, offset=1, limit=500):
+        def patched_read(path, offset=1, limit=200):
             r = orig_read(path, offset, limit)
             orig_to_dict = r.to_dict
             def new_to_dict():

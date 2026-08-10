@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
+    DEFAULT_READ_LIMIT,
     ShellFileOperations,
     normalize_read_pagination,
     normalize_search_pagination,
@@ -1909,7 +1910,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 200, task_id: str = 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.
         if (file_size and file_size > _LARGE_FILE_HINT_BYTES
-                and limit > 200
+                and limit >= DEFAULT_READ_LIMIT
                 and result_dict.get("truncated")):
             result_dict.setdefault("_hint", (
                 f"This file is large ({file_size:,} bytes). "
