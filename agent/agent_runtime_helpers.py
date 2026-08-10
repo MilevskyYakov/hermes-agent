@@ -2897,6 +2897,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
+    elif function_name == "tool_expand":
+        def _execute(next_args: dict) -> Any:
+            from agent.session_toolsets import expand_full_toolset
+
+            return _finish_agent_tool(
+                expand_full_toolset(agent, next_args.get("reason", "")),
+                next_args,
+            )
     elif function_name == "read_terminal":
         def _execute(next_args: dict) -> Any:
             from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool

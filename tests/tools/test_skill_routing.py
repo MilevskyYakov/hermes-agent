@@ -65,6 +65,50 @@ def test_only_one_auto_core_per_turn(tmp_path):
     assert second["prompt_payload_included"] is False
 
 
+def test_selected_core_drives_session_toolset_without_second_classifier(tmp_path):
+    _make_skill(tmp_path, "dev", {"auto": "core", "direct": True})
+    agent = object()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+        patch("agent.session_toolsets.select_core_preset") as select_preset,
+        skill_routing_context(
+            [{"role": "user", "content": "Исправь код"}],
+            "session",
+            "turn",
+            agent=agent,
+        ),
+    ):
+        result = _call("dev")
+
+    assert result["routing_outcome"] == "core_selected"
+    select_preset.assert_called_once_with(agent, "dev")
+
+
+def test_manual_workflow_can_select_matching_session_preset(tmp_path):
+    _make_skill(
+        tmp_path,
+        "imagegen",
+        {"auto": "none", "direct": True, "slash": ["imagegen"]},
+    )
+    agent = object()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+        patch("agent.session_toolsets.select_core_preset") as select_preset,
+        skill_routing_context(
+            [{"role": "user", "content": "/imagegen"}],
+            "session",
+            "turn",
+            agent=agent,
+        ),
+    ):
+        result = _call("imagegen")
+
+    assert result["routing_outcome"] == "manual_selected"
+    select_preset.assert_called_once_with(agent, "imagegen")
+
+
 def test_bare_issue_url_selects_core_not_manual_issue_skill(tmp_path):
     _make_skill(tmp_path, "dev", {"auto": "core", "direct": True})
     _make_skill(tmp_path, "issue", {"auto": "none", "direct": True})

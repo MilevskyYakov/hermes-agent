@@ -504,6 +504,17 @@ def build_turn_context(
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
 
+    # New interactive sessions begin with only the existing skill router,
+    # clarification, and a full-surface escape hatch. Continuing sessions keep
+    # their persisted selection. This runs before the first prompt build, so the
+    # bootstrap schemas are the only ones sent on request #1.
+    try:
+        from agent.session_toolsets import start_session_bootstrap
+
+        start_session_bootstrap(agent, has_history=bool(conversation_history))
+    except Exception:
+        logger.debug("session toolset bootstrap skipped", exc_info=True)
+
     # The CLI may already have staged this input outside the history passed to
     # ``run_conversation``. Reuse it only when its clean transcript text matches
     # this turn; a stale handoff from a failed prior turn must not replace a
