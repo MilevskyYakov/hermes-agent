@@ -23,7 +23,8 @@ class _TestableEnv(BaseEnvironment):
 
 
 class TestBoundedOutputCollector:
-    def test_large_stream_retains_bounded_head_and_tail(self):
+    def test_large_stream_retains_bounded_head_and_tail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.tool_result_storage.LOCAL_STORAGE_DIR", tmp_path)
         collector = _BoundedOutputCollector(1_000)
         collector.append("HEAD-SENTINEL\n")
         for _ in range(2_000):
@@ -38,9 +39,16 @@ class TestBoundedOutputCollector:
         assert rendered.startswith("HEAD-SENTINEL")
         assert rendered.endswith("TAIL-SENTINEL")
         assert "[OUTPUT TRUNCATED" in rendered
+        spill_path = collector.finalize_spill()
+        assert spill_path is not None
+        full = open(spill_path, encoding="utf-8").read()
+        assert full.startswith("HEAD-SENTINEL")
+        assert full.endswith("TAIL-SENTINEL")
+        assert len(full) == collector.total_chars
 
 
-    def test_required_status_suffix_stays_inside_limit(self):
+    def test_required_status_suffix_stays_inside_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.tool_result_storage.LOCAL_STORAGE_DIR", tmp_path)
         collector = _BoundedOutputCollector(120)
         collector.append("A" * 10_000)
 
@@ -49,6 +57,7 @@ class TestBoundedOutputCollector:
         assert len(rendered) <= 120
         assert rendered.endswith("[Command timed out after 1s]")
         assert "[OUTPUT TRUNCATED" in rendered
+        collector.discard_spill()
 
 
 class TestWrapCommand:
