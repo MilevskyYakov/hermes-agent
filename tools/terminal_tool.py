@@ -54,6 +54,42 @@ from utils import env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+def _redact_terminal_spill(path: str, command: str) -> int | None:
+    """Redact credentials from a spill via bounded-memory atomic rewrite."""
+    from agent.redact import redact_terminal_output
+
+    temp_path = f"{path}.redact.tmp"
+    pending = ""
+    written_chars = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as source, open(
+            temp_path, "x", encoding="utf-8", newline=""
+        ) as target:
+            while chunk := source.read(64 * 1024):
+                pending += chunk
+                if len(pending) <= 72 * 1024:
+                    continue
+                redacted = redact_terminal_output(pending[:-8192], command, force=True)
+                target.write(redacted)
+                written_chars += len(redacted)
+                pending = pending[-8192:]
+            redacted = redact_terminal_output(pending, command, force=True)
+            target.write(redacted)
+            written_chars += len(redacted)
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+        return written_chars
+    except (OSError, UnicodeError):
+        logger.warning("Could not securely redact terminal output spill", exc_info=True)
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
 # The terminal tool polls this during command execution so it can kill
@@ -2975,6 +3011,12 @@ def terminal_tool(
                 record_session_cwd(session_key, getattr(env, "cwd", None))
 
             # Extract output
+            if result is None:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "Command execution produced no result",
+                }, ensure_ascii=False)
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
 
@@ -3045,6 +3087,19 @@ def terminal_tool(
             # both modes. See issue #43025.
             from agent.redact import redact_terminal_output
             output = redact_terminal_output(output.strip(), command) if output else ""
+            full_output_path = result.get("full_output_path")
+            spill_error = result.get("spill_error")
+            redacted_full_chars = (
+                _redact_terminal_spill(full_output_path, command) if full_output_path else None
+            )
+            if full_output_path and redacted_full_chars is None:
+                # Security fails closed: never expose an unredacted spill path.
+                try:
+                    os.unlink(full_output_path)
+                except OSError:
+                    pass
+                full_output_path = None
+                spill_error = "Full output failed security redaction; rerun with narrower output."
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
@@ -3055,6 +3110,26 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            if spill_error:
+                result_dict["spill_error"] = spill_error
+            if full_output_path:
+                full_chars = redacted_full_chars or 0
+                result_dict.update({
+                    "truncated": True,
+                    "full_chars": full_chars,
+                    "returned_chars": len(output),
+                    "full_output_path": full_output_path,
+                    "continuation": (
+                        f"Use read_file(path={full_output_path!r}, offset=1) "
+                        "to inspect the complete output."
+                    ),
+                })
+                logger.info(
+                    "tool_result_size tool=terminal full_chars=%d returned_chars=%d ratio=%.4f persisted=true",
+                    full_chars,
+                    len(output),
+                    len(output) / full_chars if full_chars else 1.0,
+                )
             try:
                 from agent.verification_evidence import record_terminal_result
 

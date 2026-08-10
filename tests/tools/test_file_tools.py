@@ -10,7 +10,14 @@ from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
     PATCH_SCHEMA,
+    READ_FILE_SCHEMA,
+    SEARCH_FILES_SCHEMA,
 )
+
+
+def test_read_and_search_schema_defaults_are_bounded():
+    assert READ_FILE_SCHEMA["parameters"]["properties"]["limit"]["default"] == 200
+    assert SEARCH_FILES_SCHEMA["parameters"]["properties"]["limit"]["default"] == 20
 
 
 class TestReadFileHandler:
@@ -27,7 +34,24 @@ class TestReadFileHandler:
         result = json.loads(read_file_tool("/tmp/test.txt"))
         assert result["content"] == "line1\nline2"
         assert result["total_lines"] == 2
-        mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 500)
+        mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 200)
+
+    def test_local_spill_paginates_without_overlap(self, tmp_path, monkeypatch):
+        import tools.tool_result_storage as storage
+        from tools.file_tools import read_file_tool
+
+        monkeypatch.setattr(storage, "LOCAL_STORAGE_DIR", tmp_path)
+        spill = tmp_path / "terminal.txt"
+        spill.write_text("\n".join(f"line-{number}" for number in range(1, 6)), encoding="utf-8")
+
+        first = json.loads(read_file_tool(str(spill), offset=1, limit=2))
+        second = json.loads(read_file_tool(str(spill), offset=3, limit=2))
+
+        assert first["content"] == "1|line-1\n2|line-2"
+        assert first["next_offset"] == 3
+        assert second["content"] == "3|line-3\n4|line-4"
+        assert second["next_offset"] == 5
+        assert first["spill_file"] is True
 
 
     @patch("tools.file_tools._get_file_ops")

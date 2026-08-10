@@ -1,5 +1,7 @@
 """Regression tests for sudo detection and sudo password handling."""
 
+import os
+
 import tools.terminal_tool as terminal_tool
 
 
@@ -9,6 +11,22 @@ def setup_function():
 
 def teardown_function():
     terminal_tool._reset_cached_sudo_passwords()
+
+
+def test_terminal_spill_redaction_is_atomic_and_forced(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
+    secret = "sk-" + "a" * 48
+    path = tmp_path / "terminal.txt"
+    path.write_text("x" * 65_530 + f"\nAPI_KEY={secret}\n" + "y" * 20_000)
+
+    chars = terminal_tool._redact_terminal_spill(str(path), "printenv")
+    content = path.read_text()
+
+    assert chars == len(content)
+    assert secret not in content
+    assert "API_KEY=" in content
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert not (tmp_path / "terminal.txt.redact.tmp").exists()
 
 
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):

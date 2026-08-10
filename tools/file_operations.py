@@ -435,7 +435,7 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
     
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 200) -> ReadResult:
         """Read a file with pagination support."""
         ...
 
@@ -487,7 +487,7 @@ class FileOperations(ABC):
 
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
-               file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
+               file_glob: Optional[str] = None, limit: int = 20, offset: int = 0,
                output_mode: str = "content", context: int = 0) -> SearchResult:
         """Search for content or files."""
         ...
@@ -711,9 +711,9 @@ MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
 DEFAULT_READ_OFFSET = 1
-DEFAULT_READ_LIMIT = 500
+DEFAULT_READ_LIMIT = 200
 DEFAULT_SEARCH_OFFSET = 0
-DEFAULT_SEARCH_LIMIT = 50
+DEFAULT_SEARCH_LIMIT = 20
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -1116,14 +1116,14 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
     
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 200) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
         
         Args:
             path: File path (absolute or relative to cwd)
             offset: Line number to start from (1-indexed, default 1)
-            limit: Maximum lines to return (default 500, max 2000)
+            limit: Maximum lines to return (default 200, max 2000)
         
         Returns:
             ReadResult with content, metadata, or error info
@@ -2085,7 +2085,7 @@ class ShellFileOperations(FileOperations):
     # =========================================================================
     
     def search(self, pattern: str, path: str = ".", target: str = "content",
-               file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
+               file_glob: Optional[str] = None, limit: int = 20, offset: int = 0,
                output_mode: str = "content", context: int = 0) -> SearchResult:
         """
         Search for content or files.
@@ -2095,7 +2095,7 @@ class ShellFileOperations(FileOperations):
             path: Directory/file to search (default: cwd)
             target: "content" (grep) or "files" (glob)
             file_glob: File pattern filter for content search (e.g., "*.py")
-            limit: Max results (default 50)
+            limit: Max results (default 20)
             offset: Skip first N results
             output_mode: "content", "files_only", or "count"
             context: Lines of context around matches

@@ -64,6 +64,8 @@ class _BoundedOutputCollector:
         self._tail_chars = 0
         self._total_chars = 0
         self._lock = threading.Lock()
+        self._spill_writer = None
+        self._spill_failed = False
 
     @property
     def buffered_chars(self) -> int:
@@ -80,6 +82,27 @@ class _BoundedOutputCollector:
             return
         with self._lock:
             text_len = len(text)
+            if self._spill_writer is not None:
+                try:
+                    self._spill_writer.write(text)
+                except Exception:
+                    logger.warning("Terminal output spill write failed", exc_info=True)
+                    self._spill_writer.abort()
+                    self._spill_writer = None
+                    self._spill_failed = True
+            elif not self._spill_failed and self._total_chars + text_len > self.max_chars:
+                try:
+                    from tools.tool_result_storage import AtomicSpillWriter
+
+                    self._spill_writer = AtomicSpillWriter(f"terminal-{int(time.time())}-{uuid.uuid4().hex}")
+                    self._spill_writer.write("".join(self._head) + "".join(self._tail))
+                    self._spill_writer.write(text)
+                except Exception:
+                    logger.warning("Could not start terminal output spill", exc_info=True)
+                    if self._spill_writer is not None:
+                        self._spill_writer.abort()
+                    self._spill_failed = True
+                    self._spill_writer = None
             self._total_chars += text_len
             start = 0
 
@@ -143,6 +166,33 @@ class _BoundedOutputCollector:
             tail_chars = content_budget - head_chars
             rendered_tail = tail[-tail_chars:] if tail_chars else ""
             return head[:head_chars] + notice[:available] + rendered_tail + suffix
+
+    def finalize_spill(self) -> str | None:
+        """Atomically publish streamed full output when capture exceeded limit."""
+        with self._lock:
+            if self._spill_writer is None:
+                return None
+            writer = self._spill_writer
+            self._spill_writer = None
+            try:
+                return writer.commit()
+            except Exception:
+                logger.warning("Could not finalize terminal output spill", exc_info=True)
+                writer.abort()
+                self._spill_failed = True
+                return None
+
+    def discard_spill(self) -> None:
+        with self._lock:
+            if self._spill_writer is not None:
+                self._spill_writer.abort()
+                self._spill_writer = None
+
+    def __del__(self):
+        try:
+            self.discard_spill()
+        except Exception:
+            pass
 
 
 def set_activity_callback(cb: Callable[[str], None] | None) -> None:
@@ -862,6 +912,24 @@ class BaseEnvironment(ABC):
             capture_limit = _UNBOUNDED_CAPTURE_CHARS
         output = _BoundedOutputCollector(capture_limit)
 
+        def _captured_result(returncode: int | None, *, suffix: str = "") -> dict:
+            rendered = output.render(suffix=suffix)
+            result = {
+                "output": rendered,
+                "returncode": returncode,
+            }
+            if bounded_capture:
+                result["full_chars"] = output.total_chars
+                result["returned_chars"] = len(rendered)
+                spill_path = output.finalize_spill()
+                if spill_path:
+                    result["full_output_path"] = spill_path
+                elif output.total_chars > output.max_chars:
+                    result["spill_error"] = (
+                        "Full output could not be saved; free disk space and rerun the command."
+                    )
+            return result
+
         # Non-blocking drain via select().
         #
         # The old pattern — ``for line in proc.stdout`` — blocks on
@@ -1027,10 +1095,7 @@ class BaseEnvironment(ABC):
                         )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
-                    return {
-                        "output": output.render(suffix="\n[Command interrupted]"),
-                        "returncode": 130,
-                    }
+                    return _captured_result(130, suffix="\n[Command interrupted]")
                 if time.monotonic() > deadline:
                     if _DEBUG_INTERRUPT:
                         logger.info(
@@ -1041,12 +1106,12 @@ class BaseEnvironment(ABC):
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
-                    return {
-                        "output": output.render(suffix=timeout_msg).lstrip()
-                        if output.total_chars == 0
-                        else output.render(suffix=timeout_msg),
-                        "returncode": 124,
-                    }
+                    result = _captured_result(124, suffix=timeout_msg)
+                    if output.total_chars == 0:
+                        result["output"] = result["output"].lstrip()
+                        if bounded_capture:
+                            result["returned_chars"] = len(result["output"])
+                    return result
                 # Periodic activity touch so the gateway knows we're alive
                 touch_activity_if_due(_activity_state, "terminal command running")
 
@@ -1099,6 +1164,7 @@ class BaseEnvironment(ABC):
                 drain_thread.join(timeout=2)
             except Exception:
                 pass  # cleanup is best-effort
+            output.discard_spill()
             raise
 
         # Drain thread now exits promptly after bash does (~300ms idle
@@ -1120,7 +1186,7 @@ class BaseEnvironment(ABC):
                 proc.returncode,
             )
 
-        return {"output": output.render(), "returncode": proc.returncode}
+        return _captured_result(proc.returncode)
 
     def _kill_process(self, proc: ProcessHandle):
         """Terminate a process. Subclasses may override for process-group kill."""
@@ -1170,6 +1236,27 @@ class BaseEnvironment(ABC):
         line_end = line_end + 1 if line_end != -1 else len(output)
 
         result["output"] = output[:line_start] + output[line_end:]
+        if "returned_chars" in result:
+            result["returned_chars"] = len(result["output"])
+
+        spill_path = result.get("full_output_path")
+        if spill_path:
+            marker_block = f"\n{marker}{cwd_path}{marker}\n".encode("utf-8")
+            try:
+                with open(spill_path, "r+b") as spill:
+                    spill.seek(0, os.SEEK_END)
+                    size = spill.tell()
+                    start = max(0, size - max(8192, len(marker_block)))
+                    spill.seek(start)
+                    tail = spill.read()
+                    marker_at = tail.rfind(marker_block)
+                    if marker_at >= 0:
+                        spill.truncate(start + marker_at)
+                        result["full_chars"] = max(
+                            0, int(result.get("full_chars", 0)) - len(marker_block.decode("utf-8"))
+                        )
+            except OSError:
+                logger.warning("Could not strip cwd marker from terminal spill", exc_info=True)
 
     # ------------------------------------------------------------------
     # Hooks

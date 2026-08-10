@@ -1261,10 +1261,56 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 200, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+
+        # Terminal bounded-capture spills live on the Hermes host even when the
+        # active command backend is remote. Read only files inside the managed
+        # private spill directory here so the continuation path always works.
+        from tools.tool_result_storage import LOCAL_STORAGE_DIR
+
+        candidate = Path(path).expanduser().resolve()
+        try:
+            candidate.relative_to(LOCAL_STORAGE_DIR.resolve())
+            is_local_spill = candidate.is_file()
+        except (OSError, ValueError):
+            is_local_spill = False
+        if is_local_spill:
+            try:
+                with candidate.open("rb") as sample:
+                    if b"\0" in sample.read(4096):
+                        return tool_error("Binary spill file - cannot display as text.")
+                selected = []
+                total_lines = 0
+                end_line = offset + limit - 1
+                with candidate.open("r", encoding="utf-8", errors="replace") as spill:
+                    for total_lines, line in enumerate(spill, start=1):
+                        if offset <= total_lines <= end_line:
+                            selected.append(line.rstrip("\r\n"))
+                result_dict = {
+                    "content": "\n".join(
+                        f"{offset + index}|{line}" for index, line in enumerate(selected)
+                    ),
+                    "total_lines": total_lines,
+                    "file_size": candidate.stat().st_size,
+                    "truncated": total_lines > end_line,
+                    "spill_file": True,
+                }
+                if result_dict["truncated"]:
+                    result_dict["next_offset"] = end_line + 1
+                    result_dict["hint"] = (
+                        f"Use offset={end_line + 1} to continue reading "
+                        f"(showing {offset}-{end_line} of {total_lines} lines)"
+                    )
+                if result_dict["content"]:
+                    result_dict["content"] = redact_sensitive_text(
+                        result_dict["content"], file_read=True
+                    )
+                return json.dumps(result_dict, ensure_ascii=False)
+            except OSError as exc:
+                return tool_error(f"Failed to read spill file: {exc}")
 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
@@ -2040,7 +2086,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",
-                file_glob: str = None, limit: int = 50, offset: int = 0,
+                file_glob: str | None = None, limit: int = 20, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
                 task_id: str = "default") -> str:
     """Search for content or files."""
@@ -2164,7 +2210,7 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 200, max: 2000)", "default": 200, "maximum": 2000}
         },
         "required": ["path"]
     }
@@ -2249,7 +2295,7 @@ SEARCH_FILES_SCHEMA = {
             "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
             "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
             "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
-            "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
+            "limit": {"type": "integer", "description": "Maximum number of results to return (default: 20)", "default": 20},
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
             "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
@@ -2261,7 +2307,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 200), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
@@ -2309,7 +2355,7 @@ def _handle_search_files(args, **kw):
     target = target_map.get(raw_target, raw_target)
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
-        file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
+        file_glob=args.get("file_glob"), limit=args.get("limit", 20), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
