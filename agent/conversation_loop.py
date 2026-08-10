@@ -1707,6 +1707,15 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        try:
+            from agent.session_toolsets import rebuild_prompt_if_dirty
+
+            rebuilt_prompt = rebuild_prompt_if_dirty(agent, system_message)
+            if rebuilt_prompt is not None:
+                active_system_prompt = rebuilt_prompt
+        except Exception:
+            logger.debug("session toolset prompt rebuild skipped", exc_info=True)
+
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)
@@ -6919,6 +6928,7 @@ def run_conversation(
                     messages,
                     agent.session_id or "",
                     getattr(agent, "_current_turn_id", "") or effective_task_id,
+                    agent=agent,
                 ):
                     agent._execute_tool_calls(
                         assistant_message, messages, effective_task_id, api_call_count

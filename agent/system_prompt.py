@@ -317,6 +317,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    _session_toolset_preset = getattr(agent, "_session_toolset_preset", None)
+    if _session_toolset_preset:
+        # Machine-readable, prompt-content-free session handoff marker. Fresh
+        # Gateway agents restore the same preset from the persisted prompt.
+        stable_parts.append(
+            f"[Session toolset preset: {_session_toolset_preset}]"
+        )
+
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
     # this targets (stopping after a stub; fabricating output when a real

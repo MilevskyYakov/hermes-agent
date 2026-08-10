@@ -115,7 +115,7 @@ def _message_text(content: Any) -> str:
 
 
 @contextmanager
-def skill_routing_context(messages: list, session_id: str, turn_id: str):
+def skill_routing_context(messages: list, session_id: str, turn_id: str, *, agent=None):
     """Bind trusted per-turn routing input for ``skill_view`` enforcement."""
     user_text = ""
     transcript = []
@@ -152,6 +152,7 @@ def skill_routing_context(messages: list, session_id: str, turn_id: str):
             "turn_id": turn_id or "",
             "direct_skill": direct_skill,
             "pruned_counts": pruned_counts,
+            "agent": agent,
         }
     )
     try:
@@ -376,6 +377,13 @@ def _skill_route_finish(
     payload["load_state"] = "loaded"
     payload["routing_outcome"] = outcome
     payload["prompt_payload_included"] = True
+    if outcome in {"core_selected", "manual_selected"} and context.get("agent") is not None:
+        try:
+            from agent.session_toolsets import select_core_preset
+
+            select_core_preset(context["agent"], canonical)
+        except Exception:
+            logger.debug("core toolset preset selection failed", exc_info=True)
     logger.info("skill_routing skill=%s outcome=%s", canonical, outcome)
     return json.dumps(payload, ensure_ascii=False)
 

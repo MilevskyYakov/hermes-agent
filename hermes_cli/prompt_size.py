@@ -275,6 +275,12 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     # Tool-schema JSON — the other half of the fixed per-call payload.
     tools = getattr(agent, "tools", None) or []
     tools_json = json.dumps(tools, ensure_ascii=False)
+    from agent.session_toolsets import PRESET_TOOLSETS, preset_tool_metrics
+
+    preset_metrics = {
+        name: preset_tool_metrics(agent, name)
+        for name in ("bootstrap", *PRESET_TOOLSETS, "full")
+    }
 
     sections: List[Tuple[str, int, int]] = [
         ("stable (identity/guidance/skills)", len(stable), _bytes(stable)),
@@ -290,6 +296,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
         "memory": {"chars": len(memory_block), "bytes": _bytes(memory_block)},
         "user_profile": {"chars": len(user_block), "bytes": _bytes(user_block)},
         "tools": {"count": len(tools), "json_bytes": _bytes(tools_json)},
+        "presets": preset_metrics,
         "sections": sections,
         "skills_breakdown": _compute_skills_breakdown(skills_index),
         "toolsets_breakdown": _compute_toolsets_breakdown(tools),
@@ -322,6 +329,16 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     lines.append("")
     tools = data["tools"]
     lines.append(f"  Tool schemas         : {tools['json_bytes']:>8,} B  ({_fmt_kb(tools['json_bytes'])}, {tools['count']} tools)")
+
+    presets = data.get("presets") or {}
+    if presets:
+        lines.append("")
+        lines.append("  Session presets:")
+        for name, metrics in presets.items():
+            lines.append(
+                f"    {name:<12}: {metrics['tool_count']:>3} tools, "
+                f"{metrics['json_bytes']:>8,} B  ({_fmt_kb(metrics['json_bytes'])})"
+            )
 
     # Per-toolset schema cost — which toolset's tools cost the most to ship.
     toolsets = data.get("toolsets_breakdown") or []
