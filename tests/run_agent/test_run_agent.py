@@ -2011,7 +2011,7 @@ class TestConcurrentToolExecution:
         """Sequential and concurrent agent-level paths share post-hook ownership."""
         from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
 
-        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task"):
+        for tool_name in ("todo", "session_search", "memory", "clarify", "tool_expand", "delegate_task"):
             assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
 
         agent._context_engine_tool_names = {"context_query"}
@@ -2161,6 +2161,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
+        ("tool_expand", {"reason": "Need full tools"}),
         ("read_terminal", {}),
         ("delegate_task", {"goal": "Check the child path"}),
     )
@@ -2201,6 +2202,9 @@ class TestAgentRuntimePostHookOwnershipSync:
             "tools.read_terminal_tool.read_terminal_tool",
             lambda **kwargs: '{"ok":true}',
         )
+        agent._session_full_tools = list(agent.tools)
+        agent._session_toolsets_started = True
+        agent._session_toolset_preset = "bootstrap"
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
         monkeypatch.setattr(
             agent,
