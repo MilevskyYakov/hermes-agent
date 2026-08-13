@@ -5910,6 +5910,81 @@ def run_conversation(
                         _retry.primary_recovery_attempted = False
                         _retry.restart_with_rebuilt_messages = True
                         break
+                    # A direct provider can remain temporarily unavailable for
+                    # longer than the normal retry + one rebuilt-client cycle.
+                    # Errors reaching this except path were raised before any
+                    # stream delta was delivered (partial streams return a
+                    # continuation stub instead), so reissuing this model call
+                    # cannot replay a delivered tool call or side effect.
+                    #
+                    # Stale-stream watchdog failures stay bounded: each attempt
+                    # can already cost minutes and their circuit breaker owns
+                    # recovery. The transport helper is the single classifier
+                    # for eligible direct-provider connection errors.
+                    if (
+                        getattr(agent, "platform", None) in {"cli", "tui"}
+                        and not getattr(agent, "_consecutive_stale_streams", 0)
+                        and agent._try_recover_primary_transport(
+                            api_error,
+                            retry_count=retry_count,
+                            max_retries=max_retries,
+                            wait=False,
+                        )
+                    ):
+                        _retry.transient_recovery_cycles += 1
+                        retry_count = 0
+                        _retry.has_retried_429 = False
+                        agent._fallback_index = 0
+                        agent._fallback_activated = False
+                        wait_time = jittered_backoff(
+                            _retry.transient_recovery_cycles,
+                            base_delay=5.0,
+                            max_delay=60.0,
+                        )
+                        agent._flush_status_buffer()
+                        agent._emit_status(
+                            "⏳ Provider temporarily unavailable. "
+                            f"Hermes will retry automatically in {wait_time:.1f}s "
+                            f"(recovery cycle {_retry.transient_recovery_cycles}). "
+                            "Interrupt to stop."
+                        )
+                        logger.warning(
+                            "Transient turn recovery cycle=%s delay=%ss reason=%s %s",
+                            _retry.transient_recovery_cycles,
+                            wait_time,
+                            classified.reason.value,
+                            agent._client_log_context(),
+                        )
+                        sleep_end = time.time() + wait_time
+                        _recovery_touch_counter = 0
+                        while time.time() < sleep_end:
+                            if agent._interrupt_requested:
+                                if agent.clear_interrupt(preserve_redirect=True):
+                                    _retry.restart_with_redirected_messages = True
+                                    break
+                                _interrupt_text = (
+                                    "Operation interrupted: waiting for provider recovery."
+                                )
+                                close_interrupted_tool_sequence(messages, _interrupt_text)
+                                agent._persist_session(messages, conversation_history)
+                                agent.clear_interrupt()
+                                return {
+                                    "final_response": _interrupt_text,
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "interrupted": True,
+                                }
+                            time.sleep(0.2)
+                            _recovery_touch_counter += 1
+                            if _recovery_touch_counter % 150 == 0:
+                                agent._touch_activity(
+                                    "transient provider recovery, "
+                                    f"{int(sleep_end - time.time())}s remaining"
+                                )
+                        if _retry.restart_with_redirected_messages:
+                            break
+                        continue
                     # Terminal — flush buffered retry/fallback trace.
                     agent._flush_status_buffer()
                     _final_summary = agent._summarize_api_error(api_error)

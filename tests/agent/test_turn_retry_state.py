@@ -29,6 +29,7 @@ EXPECTED_FIELDS = {
     "oauth_1m_beta_retry_attempted",
     "llama_cpp_grammar_retry_attempted",
     "primary_recovery_attempted",
+    "transient_recovery_cycles",
     "has_retried_429",
     "auth_failover_attempted",
     "restart_with_compressed_messages",

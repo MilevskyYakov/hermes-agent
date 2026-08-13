@@ -1267,6 +1267,7 @@ def recover_with_credential_pool(
 
 def try_recover_primary_transport(
     agent, api_error: Exception, *, retry_count: int, max_retries: int,
+    wait: bool = True,
 ) -> bool:
     """Attempt one extra primary-provider recovery cycle for transient transport failures.
 
@@ -1356,13 +1357,14 @@ def try_recover_primary_transport(
                 shared=True,
             )
 
-        wait_time = min(3 + retry_count, 8)
-        agent._vprint(
-            f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
-            f"rebuilt client, waiting {wait_time}s before one last primary attempt.",
-            force=True,
-        )
-        time.sleep(wait_time)
+        if wait:
+            wait_time = min(3 + retry_count, 8)
+            agent._vprint(
+                f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
+                f"rebuilt client, waiting {wait_time}s before one last primary attempt.",
+                force=True,
+            )
+            time.sleep(wait_time)
         return True
     except Exception as e:
         logger.warning("Primary transport recovery failed: %s", e)

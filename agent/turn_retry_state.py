@@ -66,6 +66,10 @@ class TurnRetryState:
 
     # ── Transport / rate-limit recovery ──────────────────────────────────
     primary_recovery_attempted: bool = False
+    # Number of post-exhaustion foreground recovery cycles for a transient
+    # pre-delivery transport outage. Unlike the one-shot guard above, this may
+    # grow until the provider recovers or the user interrupts the turn.
+    transient_recovery_cycles: int = 0
     has_retried_429: bool = False
 
     # ── Auth-failure provider failover ───────────────────────────────────
