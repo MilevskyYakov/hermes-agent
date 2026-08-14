@@ -2009,7 +2009,7 @@ class CredentialPool:
         if aliases:
             current = self._current_unlocked()
             if current is not None and any(entry.id == current.id for entry in available):
-                return current
+                return current, pending_refresh
             from agent.codex_account_usage import load_weekly_account_credits
 
             credits = load_weekly_account_credits()
@@ -2021,7 +2021,7 @@ class CredentialPool:
                 ),
             )
             self._current_id = entry.id
-            return entry
+            return entry, pending_refresh
 
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)
