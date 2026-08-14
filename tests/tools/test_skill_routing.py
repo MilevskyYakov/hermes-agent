@@ -8,6 +8,7 @@ import pytest
 from tools.skills_tool import (
     _reset_skill_routing_state,
     _skill_view_with_bump,
+    reset_skill_view_dedup,
     skill_routing_context,
 )
 
@@ -40,12 +41,14 @@ def _call(name, *, as_dependency=False):
 @pytest.fixture(autouse=True)
 def _routing_state():
     _reset_skill_routing_state()
+    reset_skill_view_dedup()
     with (
         patch("tools.skill_usage.bump_view"),
         patch("tools.skill_usage.bump_use"),
     ):
         yield
     _reset_skill_routing_state()
+    reset_skill_view_dedup()
 
 
 def test_only_one_auto_core_per_turn(tmp_path):

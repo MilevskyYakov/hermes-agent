@@ -1845,7 +1845,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
                 return expand_full_toolset(agent, next_args.get("reason", ""))
 
-            function_result, function_args, middleware_trace, _execution_blocked = _managed_values(_run_agent_tool_execution_middleware(
+            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
                 function_args=function_args,

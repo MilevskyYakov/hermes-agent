@@ -78,6 +78,9 @@ class EnvironmentConnectionError(RuntimeError):
         )
 
 
+_AUTO_SPILL = object()
+
+
 class _BoundedOutputCollector:
     """Retain a bounded 40/60 head-tail window of streamed text.
 
@@ -91,7 +94,7 @@ class _BoundedOutputCollector:
     # (marker appended); protects disk from pathological runaway output.
     _SPILL_CAP_CHARS = 5_000_000
 
-    def __init__(self, max_chars: int, spill_path: "Path | None" = None):
+    def __init__(self, max_chars: int, spill_path: "Path | None | object" = _AUTO_SPILL):
         self.max_chars = max(1, int(max_chars))
         self._head_limit = int(self.max_chars * 0.4)
         self._tail_limit = self.max_chars - self._head_limit
@@ -101,7 +104,10 @@ class _BoundedOutputCollector:
         self._tail_chars = 0
         self._total_chars = 0
         self._lock = threading.Lock()
-        self._spill_path = spill_path
+        if spill_path is _AUTO_SPILL:
+            from tools.tool_result_storage import LOCAL_STORAGE_DIR
+            spill_path = LOCAL_STORAGE_DIR / f"terminal-{int(time.time())}-{uuid.uuid4().hex}.txt"
+        self._spill_path: Path | None = spill_path if isinstance(spill_path, Path) else None
         self._spill_fh: IO[str] | None = None
         self._spill_chars = 0
         self._spill_capped = False
@@ -149,6 +155,24 @@ class _BoundedOutputCollector:
                 pass
             self._spill_fh = None
             return str(self._spill_path)
+
+    # Compatibility for the bounded-result storage protocol. The existing
+    # exclusive spill writer already provides safe publication.
+    finalize_spill = close_spill
+
+    def discard_spill(self) -> None:
+        with self._lock:
+            if self._spill_fh is not None:
+                try:
+                    self._spill_fh.close()
+                except OSError:
+                    pass
+                self._spill_fh = None
+            if self._spill_path is not None:
+                try:
+                    self._spill_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     @property
     def buffered_chars(self) -> int:
@@ -1317,6 +1341,8 @@ class BaseEnvironment(ABC):
         spill = collector.close_spill()
         if spill:
             result["output_total_chars"] = collector.total_chars
+            result["full_chars"] = collector.total_chars
+            result["returned_chars"] = len(rendered)
             result["full_output_path"] = spill
         return result
 
@@ -1376,6 +1402,28 @@ class BaseEnvironment(ABC):
         line_end = line_end + 1 if line_end != -1 else len(output)
 
         result["output"] = output[:line_start] + output[line_end:]
+        if "returned_chars" in result:
+            result["returned_chars"] = len(result["output"])
+
+        spill_path = result.get("full_output_path")
+        if spill_path:
+            marker_block = f"\n{marker}{cwd_path}{marker}\n".encode("utf-8")
+            try:
+                with open(spill_path, "r+b") as spill:
+                    spill.seek(0, os.SEEK_END)
+                    size = spill.tell()
+                    start = max(0, size - max(8192, len(marker_block)))
+                    spill.seek(start)
+                    tail = spill.read()
+                    marker_at = tail.rfind(marker_block)
+                    if marker_at >= 0:
+                        spill.truncate(start + marker_at)
+                        result["full_chars"] = max(
+                            0, int(result.get("full_chars", 0)) - len(marker_block.decode("utf-8"))
+                        )
+                        result["output_total_chars"] = result["full_chars"]
+            except OSError:
+                logger.warning("Could not strip cwd marker from terminal spill", exc_info=True)
 
     # ------------------------------------------------------------------
     # Hooks

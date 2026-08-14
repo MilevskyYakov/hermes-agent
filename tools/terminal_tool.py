@@ -61,6 +61,42 @@ def _redact_terminal_error_text(value: Any) -> str:
     return redact_sensitive_text("" if value is None else str(value), force=True)
 
 
+def _redact_terminal_spill(path: str, command: str) -> int | None:
+    """Force-redact a completed spill before it is exposed to the model."""
+    from agent.redact import redact_terminal_output
+
+    temp_path = f"{path}.redact.tmp"
+    pending = ""
+    written_chars = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as source, open(
+            temp_path, "x", encoding="utf-8", newline=""
+        ) as target:
+            while chunk := source.read(64 * 1024):
+                pending += chunk
+                if len(pending) <= 72 * 1024:
+                    continue
+                redacted = redact_terminal_output(pending[:-8192], command, force=True)
+                target.write(redacted)
+                written_chars += len(redacted)
+                pending = pending[-8192:]
+            redacted = redact_terminal_output(pending, command, force=True)
+            target.write(redacted)
+            written_chars += len(redacted)
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+        return written_chars
+    except (OSError, UnicodeError):
+        logger.warning("Could not securely redact terminal output spill", exc_info=True)
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
 # The terminal tool polls this during command execution so it can kill
@@ -3454,25 +3490,14 @@ def terminal_tool(
             # output so no secret persists unmasked on disk.
             if spill_file_path:
                 try:
-                    _sp = Path(spill_file_path)
-                    raw_spill = _sp.read_text(encoding="utf-8", errors="replace")
-                    from tools.spill_safety import write_text_exclusive
-
-                    # Rewrite in place via lstat-checked unlink + exclusive
-                    # create so the redacted copy can't be diverted through a
-                    # symlink planted between the collector's write and now.
-                    write_text_exclusive(
-                        _sp,
-                        redact_terminal_output(strip_ansi(raw_spill), command),
-                        private=True,
-                        overwrite=True,
-                        errors="replace",
-                    )
-                    result_dict["output_total_chars"] = spill_total_chars
+                    redacted_total_chars = _redact_terminal_spill(spill_file_path, command)
+                    if redacted_total_chars is None:
+                        raise OSError("spill redaction failed")
+                    result_dict["output_total_chars"] = redacted_total_chars
                     result_dict["full_output_path"] = spill_file_path
                     result_dict["truncation_note"] = (
                         "Output exceeded the capture window (head+tail shown). "
-                        f"Full output ({spill_total_chars:,} chars) saved to "
+                        f"Full output ({redacted_total_chars:,} chars) saved to "
                         f"{spill_file_path} — search it with search_files or page it "
                         "with read_file instead of re-running the command."
                     )

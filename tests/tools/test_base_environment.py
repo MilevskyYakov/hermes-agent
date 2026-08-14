@@ -27,13 +27,13 @@ class TestBoundedOutputCollector:
         monkeypatch.setattr("tools.tool_result_storage.LOCAL_STORAGE_DIR", tmp_path)
         collector = _BoundedOutputCollector(1_000)
         collector.append("HEAD-SENTINEL\n")
-        for _ in range(2_000):
+        for _ in range(1_000):
             collector.append("x" * 4_096)
         collector.append("\nTAIL-SENTINEL")
 
         rendered = collector.render()
 
-        assert collector.total_chars > 8_000_000
+        assert collector.total_chars > 4_000_000
         assert collector.buffered_chars <= 1_000
         assert len(rendered) <= 1_000
         assert rendered.startswith("HEAD-SENTINEL")

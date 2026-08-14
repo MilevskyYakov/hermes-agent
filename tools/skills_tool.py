@@ -259,6 +259,18 @@ def _skill_route_precheck(name: str, file_path: str | None) -> str | None:
     return None
 
 
+def _skill_route_pruned_reload_pending(name: str, file_path: str | None) -> bool:
+    context = _SKILL_ROUTE_CONTEXT.get()
+    if not context or file_path:
+        return False
+    requested = _normalized_skill_name(name)
+    with _SKILL_ROUTE_LOCK:
+        state = _route_session(context)
+        prune_count = int((context.get("pruned_counts") or {}).get(name, 0))
+        reloaded_count = int(state["reloaded_pruned"].get(requested, 0))
+        return requested in state["loaded"] and prune_count > reloaded_count
+
+
 def _skill_route_finish(
     name: str, result: str, file_path: str | None, *, as_dependency: bool = False
 ) -> str:
@@ -2347,14 +2359,15 @@ def _skill_view_with_bump(args, **kw):
     telemetry failure never breaks the tool call."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    # Preserve upstream's repeat-view cache before routing, because a cached
-    # view is not a second workflow load.
-    stub = _check_skill_view_dedup(task_id, name, args.get("file_path"))
-    if stub is not None:
-        return stub
+    force_pruned_reload = _skill_route_pruned_reload_pending(name, args.get("file_path"))
     cached = _skill_route_precheck(name, args.get("file_path"))
     if cached is not None:
         return cached
+    # Routing precedes repeat-view dedup: a cache hit must not bypass the
+    # one-workflow-per-turn gate or conceal its routing metadata.
+    stub = None if force_pruned_reload else _check_skill_view_dedup(task_id, name, args.get("file_path"))
+    if stub is not None:
+        return stub
     result = skill_view(
         name, file_path=args.get("file_path"), task_id=task_id
     )
