@@ -64,6 +64,7 @@ describe('statusBarSegments', () => {
 
     expect(s).toEqual({
       compactCtx: false,
+      duration: true,
       voice: true,
       bg: true,
       subagents: true

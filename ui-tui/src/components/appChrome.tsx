@@ -183,9 +183,10 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
 
 function WorkPhaseStatus({ color, phase, startedAt }: { color: string; phase: WorkPhase; startedAt?: null | number }) {
   const [now, setNow] = useState(() => Date.now())
+  const isOccluded = useStore($isStatusRuleOccluded)
 
   useEffect(() => {
-    if (!startedAt) {
+    if (!startedAt || isOccluded) {
       return
     }
 
@@ -193,7 +194,7 @@ function WorkPhaseStatus({ color, phase, startedAt }: { color: string; phase: Wo
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [startedAt])
+  }, [isOccluded, startedAt])
 
   return (
     <Text color={color}>
@@ -207,6 +208,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
+  const isOccluded = useStore($isStatusRuleOccluded)
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
@@ -215,6 +217,11 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   const { intervalMs, showVerb } = renderIndicator(style, 0)
 
   useEffect(() => {
+    if (isOccluded) {
+      return
+    }
+
+    setNow(Date.now())
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
     // Verb timer is gated on `showVerb` — `unicode` style hides the verb
@@ -229,7 +236,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
         clearInterval(verb)
       }
     }
-  }, [intervalMs, showVerb])
+  }, [intervalMs, isOccluded, showVerb])
 
   const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
@@ -351,6 +358,7 @@ export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent 
 export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
+  duration: boolean
   subagents: boolean
   voice: boolean
 }
@@ -360,6 +368,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
 
   return {
     compactCtx: w < 72,
+    duration: w >= 76,
     voice: w >= 84,
     bg: w >= 88,
     subagents: w >= 92
@@ -543,6 +552,8 @@ export function StatusRule({
   usage,
   bgCount,
   liveSessionCount,
+  lastTurnEndedAt,
+  sessionStartedAt,
   sessionTitle,
   subagents = [],
   turnStartedAt,
@@ -633,6 +644,9 @@ export function StatusRule({
       : ''
 
   const activeVoiceLabel = voiceLabel?.startsWith('●') ? '● запись' : voiceLabel?.startsWith('◉') ? '◌ обработка' : ''
+  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+  const showIdle =
+    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
   const showVoice = segs.voice && !!activeVoiceLabel && fits(SEP + stringWidth(activeVoiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`⚙ ${bgCount}`))
@@ -742,6 +756,18 @@ export function StatusRule({
         <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
           {' │ '}↻ {compressions}
         </Text>
+        {showDuration ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <SessionDuration startedAt={sessionStartedAt!} />
+          </Text>
+        ) : null}
+        {showIdle ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <IdleSince endedAt={lastTurnEndedAt!} />
+          </Text>
+        ) : null}
         {showVoice ? (
           <Text color={activeVoiceLabel.startsWith('●') ? t.color.error : t.color.warn} wrap="truncate-end">
             {' │ '}
@@ -894,7 +920,9 @@ interface StatusRuleProps {
   modelFast?: boolean
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
+  lastTurnEndedAt?: null | number
   notice?: Notice | null
+  sessionStartedAt?: null | number
   sessionTitle?: string
   subagents?: SubagentProgress[]
   status: string
