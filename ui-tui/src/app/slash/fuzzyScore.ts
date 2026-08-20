@@ -67,9 +67,13 @@ export function rankSlashItems<T>(items: T[], query: string, toScoreItem: (item:
     return items
   }
 
-  return items
+  const ranked = items
     .map((item, index) => ({ index, item, score: scoreSlashMenuItem(toScoreItem(item), normalized) }))
     .filter(entry => entry.score !== Number.POSITIVE_INFINITY)
+
+  const matches = ranked.some(entry => entry.score < 3) ? ranked.filter(entry => entry.score < 3) : ranked
+
+  return matches
     .sort((a, b) => a.score - b.score || a.index - b.index)
     .map(entry => entry.item)
 }

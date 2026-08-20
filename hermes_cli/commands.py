@@ -377,13 +377,17 @@ def _build_description(cmd: CommandDef) -> str:
     return cmd.description
 
 
+# Aliases kept for backwards-compatible execution but omitted from discovery.
+_HIDDEN_COMMAND_ALIASES = {"tasks"}
+
 # Backwards-compatible flat dict: "/command" -> description
 COMMANDS: dict[str, str] = {}
 for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
         COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
         for _alias in _cmd.aliases:
-            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+            if _alias not in _HIDDEN_COMMAND_ALIASES:
+                COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
 
 # Backwards-compatible categorized dict
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
@@ -392,7 +396,8 @@ for _cmd in COMMAND_REGISTRY:
         _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
         _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
         for _alias in _cmd.aliases:
-            _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
+            if f"/{_alias}" in COMMANDS:
+                _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
 
 
 # Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
@@ -2132,7 +2137,8 @@ class SlashCommandCompleter(Completer):
                     display_meta=desc,
                 )
 
-        for cmd, info in self._iter_skill_bundles().items():
+        bundles = self._iter_skill_bundles()
+        for cmd, info in bundles.items():
             cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 description = str(info.get("description", "Skill bundle"))
@@ -2146,6 +2152,8 @@ class SlashCommandCompleter(Completer):
                 )
 
         for cmd, info in self._iter_skill_commands().items():
+            if cmd in bundles:
+                continue
             cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 description = str(info.get("description", "Skill command"))

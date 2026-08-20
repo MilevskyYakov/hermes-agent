@@ -47,7 +47,7 @@ def test_name_match_beats_description_match():
     assert score_slash_completion_item(item, "recap") == 0
 
 
-def test_fuzzy_rank_merges_description_matches_from_catalog():
+def test_fuzzy_rank_prefers_name_matches_over_description_matches():
     prefix_hits = [_item("/summon")]
     catalog = [
         _item("/summon"),
@@ -57,10 +57,17 @@ def test_fuzzy_rank_merges_description_matches_from_catalog():
     ranked, score_of = fuzzy_rank_slash_items(prefix_hits, catalog, "summ")
 
     texts = [item["text"] for item in ranked]
-    assert texts == ["/summon", "/recaps"]  # name prefix (1) before description (4)
+    assert texts == ["/summon"]
     assert score_of(ranked[0]) == 1
-    assert score_of(ranked[1]) == 4
     assert math.isinf(score_of(_item("/help", "Show available commands")))
+
+
+def test_fuzzy_rank_uses_description_when_no_name_matches():
+    catalog = [_item("/recaps", "Show a summary of the session")]
+    ranked, score_of = fuzzy_rank_slash_items([], catalog, "summary")
+
+    assert [item["text"] for item in ranked] == ["/recaps"]
+    assert score_of(ranked[0]) == 3
 
 
 def test_fuzzy_rank_is_stable_within_a_tier():

@@ -85,6 +85,8 @@ def fuzzy_rank_slash_items(
             continue
         scores[id(item)] = score
         scored.append((score, index, item))
+    if any(score < 3 for score, _, _ in scored):
+        scored = [entry for entry in scored if entry[0] < 3]
     scored.sort(key=lambda entry: (entry[0], entry[1]))
 
     ranked = [item for _, _, item in scored]
