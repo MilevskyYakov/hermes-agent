@@ -89,7 +89,9 @@ def _make_agent(monkeypatch):
     stub._subdirectory_hints = MagicMock()
     stub._subdirectory_hints.check_tool_call = lambda *a, **kw: None
     stub._flush_messages_to_session_db = lambda *a, **kw: None
-    stub._append_guardrail_observation = lambda name, result, *a, **kw: result
+    stub._append_guardrail_observation = (
+        lambda name, args, function_result, **kw: function_result
+    )
     stub._execute_tool_calls_concurrent = (
         _ra.AIAgent._execute_tool_calls_concurrent.__get__(stub)
     )
