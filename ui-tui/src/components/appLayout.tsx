@@ -498,16 +498,16 @@ const StatusRulePane = memo(function StatusRulePane({
         cwdLabel={status.cwdLabel}
         focusView={ui.focusView}
         indicatorStyle={ui.indicatorStyle}
+        lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
-        lastTurnEndedAt={status.lastTurnEndedAt}
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
+        onSubagentClick={() => patchOverlayState({ agents: true })}
         sessionStartedAt={status.sessionStartedAt}
         sessionTitle={status.sessionTitle}
-        onSubagentClick={() => patchOverlayState({ agents: true })}
         status={ui.status}
         statusColor={status.statusColor}
         subagents={subagents}

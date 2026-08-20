@@ -73,7 +73,5 @@ export function rankSlashItems<T>(items: T[], query: string, toScoreItem: (item:
 
   const matches = ranked.some(entry => entry.score < 3) ? ranked.filter(entry => entry.score < 3) : ranked
 
-  return matches
-    .sort((a, b) => a.score - b.score || a.index - b.index)
-    .map(entry => entry.item)
+  return matches.sort((a, b) => a.score - b.score || a.index - b.index).map(entry => entry.item)
 }

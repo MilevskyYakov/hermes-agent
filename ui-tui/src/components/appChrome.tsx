@@ -645,15 +645,19 @@ export function StatusRule({
 
   const activeVoiceLabel = voiceLabel?.startsWith('●') ? '● запись' : voiceLabel?.startsWith('◉') ? '◌ обработка' : ''
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+
   const showIdle =
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+
   const showVoice = segs.voice && !!activeVoiceLabel && fits(SEP + stringWidth(activeVoiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`⚙ ${bgCount}`))
 
   const runningAgents = subagents.filter(agent => agent.status === 'running').length
   const queuedAgents = subagents.filter(agent => agent.status === 'queued').length
-  const failedAgents = subagents.filter(agent => ['error', 'failed', 'interrupted', 'timeout'].includes(agent.status)).length
+  const failedAgents = subagents.filter(agent =>
+    ['error', 'failed', 'interrupted', 'timeout'].includes(agent.status)
+  ).length
   const fallbackRunning = !subagents.length ? (usage.active_subagents ?? 0) : 0
   const activeAgents = runningAgents + queuedAgents + fallbackRunning
 
