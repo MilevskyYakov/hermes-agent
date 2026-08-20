@@ -330,6 +330,22 @@ class TestSlashCommandCompleter:
         assert completions[0].display_text == "/gif-search"
         assert completions[0].display_meta_text == "⚡ Search for GIFs across providers"
 
+    def test_bundle_hides_same_named_skill_command(self):
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/taskfinish": {"description": "Finish task"},
+            },
+            skill_bundles_provider=lambda: {
+                "/taskfinish": {"description": "Finish task", "skills": ["taskfinish/SKILL"]},
+            },
+        )
+
+        completions = _completions(completer, "/task")
+
+        assert len(completions) == 1
+        assert completions[0].display_text == "/taskfinish"
+        assert completions[0].display_meta_text.startswith("▣ ")
+
 
 
     def test_skill_provider_exception_is_swallowed(self):
