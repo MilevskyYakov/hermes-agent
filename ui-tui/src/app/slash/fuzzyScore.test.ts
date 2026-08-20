@@ -69,10 +69,10 @@ describe('rankSlashItems', () => {
     expect(rankSlashItems(apps, '/timer', toScoreItem).map(app => app.id)).toEqual(['clock'])
   })
 
-  it('ranks name matches above description matches and drops non-matches', () => {
+  it('hides description matches when a name matches', () => {
     const ranked = rankSlashItems([{ help: 'model picker widget', id: 'gallery' }, ...apps], '/model', toScoreItem)
 
-    expect(ranked.map(app => app.id)).toEqual(['models', 'gallery'])
+    expect(ranked.map(app => app.id)).toEqual(['models'])
   })
 
   it('keeps original order within a score tier', () => {
