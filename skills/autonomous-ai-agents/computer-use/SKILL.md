@@ -30,6 +30,19 @@ in this skill is a higher-level Hermes vocabulary; the raw cua-driver
 MCP tools (which a different agent harness would see) are NOT what you
 call — call the `computer_use` actions documented below.
 
+## Task grant (required)
+
+`computer_use` is opt-in. Before the first action — including `capture`,
+`wait`, `list_apps`, and `list_windows` — Hermes asks for one explicit grant
+for the current task. Approval covers that task only. Reset, cancel, `/new`,
+or session cleanup revokes it; the next task asks again. `/yolo` and
+`approvals.mode: off` do not create this grant.
+
+After approval, existing action-level prompts still protect mutations and
+foreground focus changes. A denied or timed-out task grant fails before
+`cua-driver` starts. To confirm revocation, start a new task and verify that
+its first `computer_use` call prompts again.
+
 ## The canonical workflow
 
 **Step 1 — Capture first.** Almost every task starts with:
@@ -181,10 +194,10 @@ browser tools. The contract is capability-based:
 `isolated_new`/`isolated_named` profiles require explicit `allow_launch=true`.
 An `existing_profile` is decided by cua-driver's immutable permission mode.
 Normal Hermes sessions use `standard`, which requires a certified protected
-host and fails closed when Hermes has none. Explicit Hermes YOLO (`--yolo`,
-`/yolo`, or `approvals.mode: off`) launches a private embedded cua-driver in
-`unrestricted` after that risk acceptance, so there are no runtime Cua
-approval prompts. Never invent, store, log, or reuse a grant token.
+host and fails closed when Hermes has none. After the separate task grant,
+explicit Hermes YOLO (`--yolo`, `/yolo`, or `approvals.mode: off`) launches a
+private embedded cua-driver in `unrestricted`; it never substitutes for the
+task grant. Never invent, store, log, or reuse a grant token.
 
 Use the native capture/AX/pixel/foreground ladder for browser chrome, browser
 permission UI, OS prompts, native dialogs, extension surfaces, unsupported

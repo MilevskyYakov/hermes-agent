@@ -23,10 +23,12 @@ FIXTURE = Path(__file__).parents[1] / "fixtures" / "cua_driver_0_9_tools_list.js
 
 @pytest.fixture(autouse=True)
 def _reset_computer_use_state():
+    from tools.computer_use import tool as cu_tool
     from tools.computer_use.tool import reset_backend_for_tests
 
     reset_backend_for_tests()
-    yield
+    with patch.object(cu_tool, "_request_task_grant", return_value=None):
+        yield
     reset_backend_for_tests()
 
 

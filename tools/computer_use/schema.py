@@ -16,7 +16,9 @@ from typing import Any, Dict
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop in the background via cua-driver — screenshots, "
+        "Requires explicit approval for one current task before any action, "
+        "including screenshots and discovery. Drive the desktop in the "
+        "background via cua-driver — screenshots, "
         "mouse, keyboard, scroll, drag — without stealing the user's cursor "
         "or keyboard focus. Supported on macOS, Windows, and Linux. "
         "Preferred workflow: call with "
@@ -57,9 +59,9 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "cua_browser_download",
                 ],
                 "description": (
-                    "Which action to perform. `capture` is free (no side "
-                    "effects). All other actions require approval unless "
-                    "auto-approved. Use `set_value` for select/popup elements "
+                    "Which action to perform. Every action requires a current "
+                    "task grant. Mutating actions retain their additional "
+                    "action-level approval. Use `set_value` for select/popup elements "
                     "and sliders — it selects the matching option directly "
                     "without opening the native menu (no focus steal)."
                 ),
