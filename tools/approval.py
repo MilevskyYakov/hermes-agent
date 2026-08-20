@@ -3979,6 +3979,39 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
+def request_session_task_approval(
+    command: str, description: str, pattern_key: str
+) -> str:
+    """Request one non-persistent approval through the active gateway surface.
+
+    CLI/TUI callers use their registered synchronous callback instead. This
+    helper exists for tools, such as computer_use, whose common entry path must
+    fail closed when no interactive approval transport is available.
+    """
+    session_key = get_current_session_key(default="")
+    if not session_key:
+        return "deny"
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+    if notify_cb is None:
+        return "deny"
+    decision = _await_gateway_decision(
+        session_key,
+        notify_cb,
+        {
+            "command": command,
+            "description": description,
+            "pattern_key": pattern_key,
+            "pattern_keys": [pattern_key],
+            "allow_permanent": False,
+        },
+        surface="gateway_task_grant",
+    )
+    if not decision.get("resolved"):
+        return "timeout"
+    return str(decision.get("choice") or "deny")
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:

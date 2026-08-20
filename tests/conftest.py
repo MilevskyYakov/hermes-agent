@@ -1639,7 +1639,7 @@ def _audio_playback_guard(request, monkeypatch):
 def _isolate_computer_use_approval_state():
     """Reset computer-use approval globals after every test.
 
-    ``tools.computer_use.tool`` keeps three module-globals for the CLI
+    ``tools.computer_use.tool`` keeps module-globals for the CLI
     approval flow: ``_approval_callback`` (set by the CLI console on init)
     plus the per-session unlock stores ``_always_allow`` /
     ``_session_auto_approve``. A test that installs a callback — or drives
@@ -1666,6 +1666,7 @@ def _isolate_computer_use_approval_state():
         with _cu_tool._approval_lock:
             _cu_tool._always_allow.clear()
             _cu_tool._session_auto_approve.clear()
+            _cu_tool._task_grants.clear()
     except Exception:
         pass
 

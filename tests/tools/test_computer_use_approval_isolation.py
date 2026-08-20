@@ -59,13 +59,14 @@ def test_a_forgets_a_poisoned_approval_callback():
     # no reset — the autouse fixture must clean this up
 
 
-def test_b_still_dispatches_with_default_allow():
-    """Without the isolation fixture this fails: the stale callback raises
-    (arity), ``_request_approval`` converts that into a deny, and the
-    backend never sees the click."""
+def test_b_still_dispatches_with_fresh_approval_callback():
+    """A stale callback must not replace this test's fresh task approval."""
     from tools.computer_use import tool as cu_tool
 
     backend = _install_backend(cu_tool)
+    cu_tool.set_approval_callback(
+        lambda _action, _args, _summary: "approve_session"
+    )
     result = cu_tool.handle_computer_use({"action": "click", "element": 3})
     call_names = [c[0] for c in backend.calls]
     assert "click" in call_names, (

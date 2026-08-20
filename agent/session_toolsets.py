@@ -31,7 +31,7 @@ PRESET_TOOLSETS: dict[str, tuple[str, ...]] = {
     ),
     "system": (
         "terminal", "file", "skills", "todo", "memory", "session_search",
-        "clarify", "cronjob", "computer_use", "web",
+        "clarify", "cronjob", "web",
     ),
 }
 

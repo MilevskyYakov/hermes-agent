@@ -166,6 +166,7 @@ _backend_permission_modes: Dict[str, str] = {}
 _approval_lock = threading.Lock()
 _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
+_task_grants: set[str] = set()
 
 
 def _cua_permission_mode(session_id: str) -> str:
@@ -294,6 +295,7 @@ def release_computer_use_session(session_id: str) -> bool:
     with _approval_lock:
         _session_auto_approve.pop(sid, None)
         _always_allow.pop(sid, None)
+        _task_grants.discard(sid)
 
     if backend is None:
         return False
@@ -350,6 +352,7 @@ def _shutdown_backend_atexit() -> None:
     with _approval_lock:
         _session_auto_approve.clear()
         _always_allow.clear()
+        _task_grants.clear()
 
     for backend, call_lock in unique.values():
         try:
@@ -476,7 +479,13 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             "code": "bring_to_front_requires_foreground",
         })
 
-    # Approval gate (destructive actions only).
+    # Every desktop read or mutation needs one fresh grant for this task.
+    # This gate runs before _get_backend(), so denial cannot start cua-driver.
+    err = _request_task_grant(args, session_id)
+    if err is not None:
+        return err
+
+    # Existing action-level gates remain in force after the task grant.
     if action in _DESTRUCTIVE_ACTIONS:
         err = _request_approval(action, args, session_id)
         if err is not None:
@@ -509,6 +518,54 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
+
+
+def _request_task_grant(args: Dict[str, Any], session_id: str) -> Optional[str]:
+    """Require one explicit human grant before this task can use the desktop."""
+    with _approval_lock:
+        if session_id in _task_grants:
+            return None
+
+    summary = "allow computer_use for this task until session cleanup"
+    cb = _approval_callback
+    if cb is not None:
+        try:
+            verdict = cb("task_grant", args, summary)
+        except Exception as exc:
+            logger.warning("computer_use task approval callback failed: %s", exc)
+            verdict = "deny"
+    else:
+        try:
+            import tools.approval as approval
+
+            verdict = getattr(approval, "request_session_task_approval")(
+                command="computer_use task grant",
+                description=(
+                    "Allow Hermes to inspect and control the desktop for this "
+                    "one task? The grant ends on reset, cancel, or cleanup."
+                ),
+                pattern_key="computer_use:task_grant",
+            )
+        except Exception as exc:
+            logger.warning("computer_use task approval unavailable: %s", exc)
+            verdict = "deny"
+
+    if verdict in {"approve_once", "approve_session", "always_approve", "once", "session", "always"}:
+        with _approval_lock:
+            _task_grants.add(session_id)
+        return None
+    if verdict == "timeout":
+        return json.dumps({
+            "error": (
+                "computer_use task approval timed out — the user did not "
+                "respond. Silence is not consent; do not retry without the user."
+            ),
+            "action": "task_grant",
+        })
+    return json.dumps({
+        "error": "computer_use requires explicit approval for this task",
+        "action": "task_grant",
+    })
 
 
 def _request_approval(action: str, args: Dict[str, Any],

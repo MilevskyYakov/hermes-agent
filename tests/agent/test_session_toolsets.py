@@ -114,6 +114,18 @@ def test_core_selection_reuses_existing_router_and_never_widens_configured_surfa
     assert "image_generate" not in agent.valid_tool_names
 
 
+def test_system_and_infra_presets_do_not_auto_expose_computer_use():
+    agent = _agent()
+    start_session_bootstrap(agent, has_history=False)
+
+    with patch("model_tools.get_tool_definitions", side_effect=_defs):
+        assert select_core_preset(agent, "system") is True
+        assert "computer_use" not in agent.valid_tool_names
+        assert select_core_preset(agent, "infra") is True
+
+    assert "computer_use" not in agent.valid_tool_names
+
+
 def test_unknown_core_keeps_bootstrap_for_full_fallback():
     agent = _agent()
     start_session_bootstrap(agent, has_history=False)
