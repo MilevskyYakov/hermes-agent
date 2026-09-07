@@ -340,6 +340,9 @@ def _build_description(cmd: CommandDef) -> str:
     return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
 
 
+# Aliases kept for backwards-compatible execution but omitted from discovery.
+_HIDDEN_COMMAND_ALIASES = {"tasks"}
+
 # Flat "/command" -> description, and the same grouped by category; both exclude gateway_only.
 COMMANDS: dict[str, str] = {}
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
@@ -352,7 +355,8 @@ for _cmd in COMMAND_REGISTRY:
         continue
     _entries = {f"/{_cmd.name}": _build_description(_cmd)}
     for _alias in _cmd.aliases:
-        _entries[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+        if _alias not in _HIDDEN_COMMAND_ALIASES:
+            _entries[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
     COMMANDS.update(_entries)
     COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {}).update(_entries)
 

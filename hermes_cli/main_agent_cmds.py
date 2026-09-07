@@ -108,6 +108,14 @@ def cmd_insights(args):
         from hermes_state import SessionDB
         from agent.insights import InsightsEngine
         db = SessionDB()
+        if getattr(args, "accounts", False):
+            from agent.codex_account_usage import format_weekly_account_usage, weekly_account_usage
+
+            conn = db._conn
+            if conn is None:
+                raise RuntimeError("Session database unavailable")
+            print(format_weekly_account_usage(weekly_account_usage(conn)))
+            return
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))

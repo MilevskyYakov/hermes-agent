@@ -4,6 +4,7 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import logging
 import sys
 
 from rich.markup import escape as _escape
@@ -384,6 +385,32 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
         route["request_overrides"] = overrides
+
+        if (
+            getattr(self, "_model_router_session_id", None) != getattr(self, "session_id", "")
+            and not getattr(self, "_resumed", False)
+            and not getattr(self, "conversation_history", None)
+        ):
+            self._model_router_session_id = getattr(self, "session_id", "")
+            try:
+                from agent.model_router import apply_route, route_first_task
+                from hermes_cli.config import load_config
+
+                model_route = route_first_task(
+                    user_message,
+                    config=load_config(),
+                    main_model=self.model,
+                    main_runtime=runtime,
+                    session_id=getattr(self, "session_id", ""),
+                )
+                route = apply_route(route, model_route)
+                route["signature"] = _route_signature(route["model"], runtime) + (
+                    (route.get("reasoning_config") or {}).get("effort"),
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Model router failed closed to primary route: %s", type(exc).__name__
+                )
         return route
 
     def _follow_compression_chain(self, session_meta, announce):
@@ -471,7 +498,14 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(
+        self,
+        *,
+        model_override: str | None = None,
+        runtime_override: dict | None = None,
+        request_overrides: dict | None = None,
+        reasoning_override: dict | None = None,
+    ) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
         from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
@@ -523,7 +557,7 @@ class CLIAgentSetupMixin:
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
-                reasoning_config=self.reasoning_config, service_tier=self.service_tier,
+                reasoning_config=reasoning_override or self.reasoning_config, service_tier=self.service_tier,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,

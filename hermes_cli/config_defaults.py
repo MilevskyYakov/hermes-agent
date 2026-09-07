@@ -40,6 +40,19 @@ DEFAULT_CONFIG = {
     # least-recently-active DETACHED sessions (no live client); reopening re-resumes from disk.
     # 0/null disables.
     "max_live_sessions": 16,
+    "session_lifecycle": {
+        "enabled": False,
+        "checkpoint_calls": 50,
+        "transition_calls": 100,
+    },
+    "model_router": {
+        "enabled": False,
+        "mode": "shadow",
+        "confidence_threshold": 0.8,
+        "luna_call_limit": 4,
+        "luna_model": "gpt-5.6-luna",
+        "sol_model": "gpt-5.6-sol",
+    },
     "session": {
         # Per-terminal `hermes -c`: each CLI session writes a breadcrumb under
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
@@ -693,6 +706,13 @@ DEFAULT_CONFIG = {
         # overrides provider; api_key falls back to OPENAI_API_KEY; reasoning_effort:
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
+        "model_router": {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-luna",
+            "timeout": 60,
+            "extra_body": {},
+            "reasoning_effort": "max",
+        },
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
         # are ignored. Compression: raise timeout for local models. max_output_tokens is only

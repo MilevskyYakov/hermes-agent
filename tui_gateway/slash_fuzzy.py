@@ -56,5 +56,8 @@ def fuzzy_rank_slash_items(
         if str(item.get("text", "")).strip() not in seen and not math.isinf(score_slash_completion_item(item, query))
     ]
     scores = {id(item): score_slash_completion_item(item, query) for item in merged}
-    ranked = sorted((item for item in merged if not math.isinf(scores[id(item)])), key=lambda item: scores[id(item)])
+    ranked = [item for item in merged if not math.isinf(scores[id(item)])]
+    if any(scores[id(item)] < 3 for item in ranked):
+        ranked = [item for item in ranked if scores[id(item)] < 3]
+    ranked.sort(key=lambda item: scores[id(item)])
     return ranked, lambda item: scores.get(id(item), math.inf)

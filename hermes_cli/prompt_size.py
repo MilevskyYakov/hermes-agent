@@ -175,6 +175,12 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
             pass
 
     tools = getattr(agent, "tools", None) or []
+    from agent.session_toolsets import PRESET_TOOLSETS, preset_tool_metrics
+
+    preset_metrics = {
+        name: preset_tool_metrics(agent, name)
+        for name in ("bootstrap", *PRESET_TOOLSETS, "full")
+    }
     sections: List[Tuple[str, int, int]] = [
         (label, len(text), _bytes(text))
         for label, text in (("stable (identity/guidance/skills)", stable), ("context (AGENTS.md/cwd files)", context),
@@ -188,6 +194,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
         "memory": _size(memory_block),
         "user_profile": _size(user_block),
         "tools": {"count": len(tools), "json_bytes": _bytes(json.dumps(tools, ensure_ascii=False))},
+        "presets": preset_metrics,
         "sections": sections,
         "skills_breakdown": _compute_skills_breakdown(skills_index),
         "toolsets_breakdown": _compute_toolsets_breakdown(tools),
@@ -208,6 +215,13 @@ def render_breakdown(data: Dict[str, Any]) -> str:
         lines.append(f"    {label:<19}: {byts:>8,} B  ({_fmt_kb(byts)})")
     lines += ["", "  Prompt tiers:"] + [f"    {label:<36}: {byts:>8,} B  ({_fmt_kb(byts)})" for label, _chars, byts in data["sections"]]
     lines += ["", f"  Tool schemas         : {tools['json_bytes']:>8,} B  ({_fmt_kb(tools['json_bytes'])}, {tools['count']} tools)"]
+
+    if presets := data.get("presets") or {}:
+        lines += ["", "  Session presets:"]
+        lines += [
+            f"    {name:<12}: {metrics['tool_count']:>3} tools, {metrics['json_bytes']:>8,} B  ({_fmt_kb(metrics['json_bytes'])})"
+            for name, metrics in presets.items()
+        ]
 
     if toolsets := data.get("toolsets_breakdown") or []:
         lines += ["", "  Toolsets by size (tool-schema JSON, largest first):", f"    {'toolset':<22} {'tools':>5}  {'schema':>10}"]

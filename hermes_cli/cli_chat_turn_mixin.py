@@ -44,16 +44,28 @@ class CLIChatTurnMixin:
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
+        model_route = turn_route.get("model_route")
+        if model_route:
+            if model_route.get("proposal_required"):
+                from agent.model_router import proposal_response
+
+                return proposal_response(model_route)
+            _cprint(model_route["visible_line"])
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
-                                request_overrides=turn_route.get("request_overrides")):
+                                request_overrides=turn_route.get("request_overrides"),
+                                reasoning_override=turn_route.get("reasoning_config")):
             return None
         agent = self.agent
         if agent is None:
             return None
+        if model_route:
+            from agent.model_router import attach_route
+
+            attach_route(agent, model_route)
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str):
