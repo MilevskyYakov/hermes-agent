@@ -148,6 +148,9 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
                 self.rows.append(m["content"])
             return list(range(1, len(messages) + 1))
 
+        def flush_token_counts(self):
+            return True
+
     db = _BarrierDB()
     agent._session_db = db
     agent._session_db_created = True
@@ -2610,6 +2613,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("todo_list", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
+        ("tool_expand", {"reason": "Need more tools"}),
         ("clarify", {"question": "Continue?"}),
         ("read_terminal", {}),
         ("desktop_preview", {"action": "read"}),
@@ -2648,6 +2652,10 @@ class TestAgentRuntimePostHookOwnershipSync:
         monkeypatch.setattr(
             "tools.memory_tool.memory_tool",
             lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "agent.session_toolsets.expand_full_toolset",
+            lambda *args: '{"ok":true}',
         )
         monkeypatch.setattr(
             "tools.clarify_tool.clarify_tool",

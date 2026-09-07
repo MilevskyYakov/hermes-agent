@@ -18,9 +18,9 @@ def _response(text: str):
 
 def _agent():
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI", return_value=MagicMock()),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key="test-key-12345678",
@@ -52,9 +52,15 @@ def test_pre_delivery_outage_survives_multiple_recovery_cycles():
         patch.object(agent, "_persist_session") as persist,
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
-        patch("run_agent.OpenAI", return_value=MagicMock()),
-        patch("agent.agent_runtime_helpers.time.sleep"),
-        patch("agent.conversation_loop.jittered_backoff", return_value=0),
+        patch.object(
+            agent,
+            "_try_recover_primary_transport",
+            side_effect=lambda *_args, **kwargs: kwargs.get("wait") is False,
+        ),
+        patch("agent.turn_recovery.time.sleep"),
+        patch("agent.turn_api_error.time.sleep"),
+        patch("agent.turn_api_error.jittered_backoff", return_value=0),
+        patch("agent.retry_utils.jittered_backoff", return_value=0),
     ):
         result = agent.run_conversation("continue the task")
 
@@ -83,9 +89,14 @@ def test_interrupt_stops_transient_recovery_wait():
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
-        patch.object(agent, "_try_recover_primary_transport", return_value=True),
-        patch("agent.conversation_loop.time.sleep", side_effect=interrupt_sleep),
-        patch("agent.conversation_loop.jittered_backoff", side_effect=backoff),
+        patch.object(
+            agent,
+            "_try_recover_primary_transport",
+            side_effect=lambda *_args, **kwargs: kwargs.get("wait") is False,
+        ),
+        patch("agent.turn_api_error.time.sleep", side_effect=interrupt_sleep),
+        patch("agent.turn_api_error.jittered_backoff", side_effect=backoff),
+        patch("agent.retry_utils.jittered_backoff", side_effect=backoff),
     ):
         result = agent.run_conversation("continue the task")
 
@@ -110,8 +121,9 @@ def test_background_surface_keeps_bounded_retry_policy():
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch.object(agent, "_try_recover_primary_transport", return_value=True) as recover,
-        patch("agent.conversation_loop.time.sleep"),
-        patch("agent.conversation_loop.jittered_backoff", return_value=0),
+        patch("agent.turn_recovery.time.sleep"),
+        patch("agent.turn_api_error.jittered_backoff", return_value=0),
+        patch("agent.retry_utils.jittered_backoff", return_value=0),
     ):
         result = agent.run_conversation("continue the task")
 
