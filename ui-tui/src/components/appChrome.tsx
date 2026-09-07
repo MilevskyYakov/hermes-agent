@@ -16,7 +16,7 @@ import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, SubagentProgress, Usage } from '../types.js'
+import type { Msg, Usage } from '../types.js'
 
 import { scrollbarColors } from './overlayPrimitives.js'
 
@@ -105,74 +105,12 @@ export const MAX_DURATION_WIDTH = Math.max(
   stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
 )
 
-const WORK_PHASES = {
-  delegate: { icon: '⛓', label: 'делегирую' },
-  edit: { icon: '✎', label: 'изменяю' },
-  execute: { icon: '›', label: 'выполняю' },
-  read: { icon: '▣', label: 'читаю' },
-  search: { icon: '⌕', label: 'ищу' },
-  think: { icon: '⌁', label: 'думаю' }
-} as const
-
-interface WorkPhase {
-  icon: string
-  label: string
-}
-
-const MAX_WORK_PHASE_WIDTH = Math.max(
-  ...Object.values(WORK_PHASES).map(phase => stringWidth(`${phase.icon} ${phase.label}`))
-)
-
-export function workPhase(status: string, busy: boolean, toolName = ''): WorkPhase {
-  const state = status.toLowerCase()
-
-  if (/approval|confirm|waiting for input/.test(state)) {
-    return { icon: '⚠', label: 'нужно подтверждение' }
-  }
-
-  if (/gateway exited|disconnect|offline/.test(state)) {
-    return { icon: '✕', label: 'нет соединения' }
-  }
-
-  if (/interrupt|stopp/.test(state)) {
-    return { icon: '⏸', label: 'остановлено' }
-  }
-
-  if (!busy) {
-    return { icon: '✓', label: 'готов' }
-  }
-
-  const tool = toolName.toLowerCase()
-
-  if (/delegate|workflow|subagent/.test(tool)) {
-    return WORK_PHASES.delegate
-  }
-
-  if (/(^|__|_)(patch|write|edit|create|delete|remove|set)(_|$)/.test(tool)) {
-    return WORK_PHASES.edit
-  }
-
-  if (/(^|__|_)(search|query|recall|index)(_|$)/.test(tool)) {
-    return WORK_PHASES.search
-  }
-
-  if (/(^|__|_)(read|get|list|extract|snapshot|analyze)(_|$)/.test(tool)) {
-    return WORK_PHASES.read
-  }
-
-  return tool ? WORK_PHASES.execute : WORK_PHASES.think
-}
-
 // Display width to reserve for the busy indicator so its verb + elapsed-time
 // tail can't shove the model off-screen on narrow terminals. Style-aware:
 // `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  if (style === 'ascii') {
-    return MAX_WORK_PHASE_WIDTH + (hasDuration ? 1 + MAX_DURATION_WIDTH : 0)
-  }
-
   const { showVerb } = renderIndicator(style, 0)
   const verb = showVerb ? 1 + VERB_PAD_LEN : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
@@ -181,30 +119,17 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
   return indicatorFrameWidth(style) + verb + duration
 }
 
-function WorkPhaseStatus({ color, phase, startedAt }: { color: string; phase: WorkPhase; startedAt?: null | number }) {
-  const [now, setNow] = useState(() => Date.now())
-  const isOccluded = useStore($isStatusRuleOccluded)
-
-  useEffect(() => {
-    if (!startedAt || isOccluded) {
-      return
-    }
-
-    setNow(Date.now())
-    const id = setInterval(() => setNow(Date.now()), 1000)
-
-    return () => clearInterval(id)
-  }, [isOccluded, startedAt])
-
-  return (
-    <Text color={color}>
-      {phase.icon} {phase.label}
-      {startedAt ? ` ${fmtDuration(now - startedAt)}` : ''}
-    </Text>
-  )
-}
-
-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+function FaceTicker({
+  color,
+  startedAt,
+  style,
+  verbOverride
+}: {
+  color: string
+  startedAt?: null | number
+  style: IndicatorStyle
+  verbOverride?: string
+}) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
@@ -213,20 +138,32 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
   // for verb-less styles like `unicode`) without leaving the previous
-  // timer dangling.
+  // timer dangling. A frozen override (idle compaction) always shows the
+  // verb so "compacting…" is visible even in unicode style (#97239).
   const { intervalMs, showVerb } = renderIndicator(style, 0)
+  const freezeVerb = Boolean(verbOverride)
+  const displayVerb = freezeVerb || showVerb
 
   useEffect(() => {
+    // An overlay is painted OVER the status rule (the modal widget slot, or a
+    // floating panel growing up over the top rule), so every tick below is a
+    // re-render nobody can see — in an Ink TUI that churn reads as the dialog
+    // tearing.  Arm nothing while occluded.  The effect re-runs when the rule
+    // is revealed again and re-seeds `now` from the wall clock, so the elapsed
+    // read-out resumes live rather than frozen at the moment it was covered.
+    // See `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.
     if (isOccluded) {
       return
     }
 
     setNow(Date.now())
+
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+    // Verb timer is gated on `displayVerb` — `unicode` style hides the verb
+    // entirely, so cycling `verbTick` would be an avoidable re-render. A
+    // frozen override does not rotate.
+    const verb = displayVerb && !freezeVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
       clearInterval(glyph)
@@ -236,11 +173,11 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
         clearInterval(verb)
       }
     }
-  }, [intervalMs, isOccluded, showVerb])
+  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
+  const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -328,6 +265,13 @@ function noticeColor(level: Notice['level'], t: Theme): string {
   return t.color.accent
 }
 
+function ctxBar(pct: number | undefined, w = 10) {
+  const p = Math.max(0, Math.min(100, pct ?? 0))
+  const filled = Math.round((p / 100) * w)
+
+  return '█'.repeat(filled) + '░'.repeat(w - filled)
+}
+
 // `minLeftContent` is the display width of the high-priority left segments
 // (status indicator + model + context). Reserving it makes the cwd/branch
 // segment on the right yield FIRST on narrow terminals, instead of squeezing
@@ -353,13 +297,21 @@ export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent 
   return { leftWidth, rightWidth, separatorWidth }
 }
 
-// Progressive disclosure for optional event-driven segments. The operational
-// core (phase, model, context, compression count) is never gated here.
+// Progressive disclosure for the status rule's lower-priority tail segments.
+// As the terminal narrows we shed the least important pieces first (cost →
+// bg → voice → compressions → duration → context bar), and below the bar
+// breakpoint the context read-out collapses to a bare token count. Status and
+// model are never gated here — they're guaranteed room by `statusRuleWidths`.
 export interface StatusBarSegments {
+  bar: boolean
   bg: boolean
+  cacheHit: boolean
   compactCtx: boolean
+  compressions: boolean
   duration: boolean
+  latency: boolean
   subagents: boolean
+  tps: boolean
   voice: boolean
 }
 
@@ -368,10 +320,15 @@ export function statusBarSegments(cols: number): StatusBarSegments {
 
   return {
     compactCtx: w < 72,
+    bar: w >= 72,
     duration: w >= 76,
+    compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    subagents: w >= 92
+    subagents: w >= 92,
+    cacheHit: w >= 96,
+    latency: w >= 104,
+    tps: w >= 110
   }
 }
 
@@ -485,7 +442,7 @@ const effortLabel = (effort?: string) => {
     .trim()
     .toLowerCase()
 
-  return value && value !== 'normal' && value !== 'default' ? value : 'medium'
+  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
 }
 
 const shortModelLabel = (model: string) =>
@@ -499,16 +456,7 @@ const shortModelLabel = (model: string) =>
     .trim()
 
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' · ')
-
-function projectBranchLabel(cwdLabel: string) {
-  const match = cwdLabel.match(/^(.*?)(?: \(([^()]*)\))?$/)
-  const path = (match?.[1] ?? cwdLabel).replace(/\\/g, '/').replace(/\/$/, '')
-  const project = path.split('/').pop() || path
-  const branch = match?.[2]
-
-  return `⌂ ${project}${branch ? ` · ⎇ ${branch}` : ''}`
-}
+  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -536,13 +484,14 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
-  activeToolName,
   battery,
   focusView,
   cwdLabel,
   cols,
   busy,
+  compacting = false,
   status,
+  statusBarFields = null,
   statusColor,
   model,
   modelFast,
@@ -551,34 +500,41 @@ export function StatusRule({
   notice,
   usage,
   bgCount,
-  liveSessionCount,
   lastTurnEndedAt,
-  sessionStartedAt,
+  liveSessionCount,
   sessionTitle,
-  subagents = [],
+  sessionStartedAt,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
-  onSubagentClick,
   t
 }: StatusRuleProps) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
-  const phase = workPhase(status, busy, activeToolName)
 
-  const ctxLabel = usage.context_max
-    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}${!segs.compactCtx && pct != null ? ` · ${pct}%` : ''}`
-    : usage.total > 0
-      ? `${fmtK(usage.total)} tok`
+  // display.status_bar.fields visibility gate (same key + names as the
+  // classic CLI bar). null = user hasn't customized → everything shows.
+  const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
+
+  // On narrow terminals the context read-out collapses to a bare token count
+  // (`12k tok`) and the visual fill bar is dropped entirely.
+  const ctxLabel =
+    ok('context_detail') || ok('context_pct')
+      ? usage.context_max
+        ? segs.compactCtx
+          ? `${fmtK(usage.context_used ?? 0)} tok`
+          : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+        : usage.total > 0
+          ? `${fmtK(usage.total)} tok`
+          : ''
       : ''
 
+  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
-  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
-  const rightLabel = sessionTitle ? ` ${sessionTitle} ` : cols >= 100 ? projectBranchLabel(cwdLabel) : ''
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
-  const showBattery = !!battery && battery.available && battery.percent != null
+  const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
   const batteryText = showBattery ? batteryLabel(battery!) : ''
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
@@ -604,21 +560,24 @@ export function StatusRule({
     ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
     : showNotice
       ? noticeReserve
-      : stringWidth(`${phase.icon} ${phase.label}`)
+      : stringWidth(status)
 
   const essentialWidth =
     stringWidth('─ ') +
     batteryWidth +
     slotWidth +
     stringWidth(' │ ') +
-    stringWidth(`◈ ${modelText}`) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(`◔ ${ctxLabel}`) : 0) +
-    stringWidth(` │ ↻ ${compressions}`)
+    stringWidth(modelText) +
+    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
+  const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
 
-  // Optional event-driven segments render only when they fit after the pinned
-  // operational core. Nothing truncates mid-segment.
+  // Whole-segment progressive disclosure for the tail: a segment renders only
+  // if it fits in the space left after the pinned essentials, evaluated in
+  // descending priority order — bar, duration, compressions, voice, session
+  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+  // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
@@ -632,7 +591,8 @@ export function StatusRule({
     return false
   }
 
-  const sessionCountText = liveSessionCount > 1 ? statusSessionCountLabel(liveSessionCount) : ''
+  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -643,30 +603,48 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
-  const activeVoiceLabel = voiceLabel?.startsWith('●') ? '● запись' : voiceLabel?.startsWith('◉') ? '◌ обработка' : ''
-  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+  const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+
+  // Idle clock — time since the last final agent response. Hidden while busy
+  // (the FaceTicker's elapsed tail covers the live turn) and before the first
+  // turn completes. Shares the duration breakpoint and width reservation.
   const showIdle =
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
-  const showVoice = segs.voice && !!activeVoiceLabel && fits(SEP + stringWidth(activeVoiceLabel))
+
+  const showCompressions =
+    segs.compressions && ok('compressions') && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+
+  // Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic
+  // CLI bar (PR #98250). The server omits the keys when no data exists (zero
+  // cache reads, Codex app-server with no latency), so these self-hide.
+  const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
+  const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
+  const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
+  const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
+  const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
+  const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
+
+  const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`⚙ ${bgCount}`))
+  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
 
-  const runningAgents = subagents.filter(agent => agent.status === 'running').length
-  const queuedAgents = subagents.filter(agent => agent.status === 'queued').length
-  const failedAgents = subagents.filter(agent => ['error', 'failed', 'interrupted', 'timeout'].includes(agent.status)).length
-  const fallbackRunning = !subagents.length ? (usage.active_subagents ?? 0) : 0
-  const activeAgents = runningAgents + queuedAgents + fallbackRunning
+  const showSubagents =
+    segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
 
-  const subagentText = [
-    activeAgents > 0 ? `⛓ ${activeAgents}` : '',
-    runningAgents + fallbackRunning > 0 ? `▶${runningAgents + fallbackRunning}` : '',
-    queuedAgents > 0 ? `◷${queuedAgents}` : '',
-    failedAgents > 0 ? `⚠${failedAgents}` : ''
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  // Parked-background reassurance: a top-level delegate_task runs in the
+  // background, so the turn ends (idle) while the subagent keeps working and its
+  // result re-enters as a fresh turn later. When idle with work still in flight,
+  // spell out that the agent resumes on its own — no spinner, nothing to poll.
+  // Width-budgeted like every tail segment, so it drops first on a tight
+  // terminal where ⛓ already carries the signal.
+  const resumeHintText =
+    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
 
-  const showSubagents = segs.subagents && !!subagentText && fits(SEP + stringWidth(subagentText))
+  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+  // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
+  // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
   // Focus-view badge. Pinned (not tail-budgeted) on purpose: the whole point of
@@ -687,11 +665,6 @@ export function StatusRule({
     <Text color={t.color.muted}> │ {sessionCountText}</Text>
   )
 
-  const handleSubagentClick = (event: { stopImmediatePropagation?: () => void }) => {
-    event.stopImmediatePropagation?.()
-    onSubagentClick?.()
-  }
-
   return (
     <Box height={1}>
       <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
@@ -708,14 +681,15 @@ export function StatusRule({
             </Text>
           ) : null}
           {busy ? (
-            indicatorStyle === 'ascii' ? (
-              <WorkPhaseStatus color={statusColor} phase={phase} startedAt={turnStartedAt} />
-            ) : (
-              <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
-            )
+            <FaceTicker
+              color={statusColor}
+              startedAt={turnStartedAt}
+              style={indicatorStyle}
+              verbOverride={compacting ? 'compacting' : undefined}
+            />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
-              {phase.icon} {phase.label}
+              {status}
             </Text>
           )}
         </Box>
@@ -737,13 +711,13 @@ export function StatusRule({
             </Text>
           ) : null}
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ ◈ '}
-            <Text color={t.color.accent}>{modelText}</Text>
+            {' │ '}
+            {modelText}
           </Text>
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
-              {' │ ◔ '}
-              <Text color={barColor}>{ctxLabel}</Text>
+              {' │ '}
+              {ctxLabel}
             </Text>
           ) : null}
         </Box>
@@ -753,9 +727,12 @@ export function StatusRule({
             <Text color={t.color.warn}>◉ focus</Text>
           </Box>
         ) : null}
-        <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
-          {' │ '}↻ {compressions}
-        </Text>
+        {showBar ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+          </Text>
+        ) : null}
         {showDuration ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -768,26 +745,70 @@ export function StatusRule({
             <IdleSince endedAt={lastTurnEndedAt!} />
           </Text>
         ) : null}
-        {showVoice ? (
-          <Text color={activeVoiceLabel.startsWith('●') ? t.color.error : t.color.warn} wrap="truncate-end">
+        {showCompressions ? (
+          <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            {activeVoiceLabel}
+            <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
+              cmp {compressions}
+            </Text>
+          </Text>
+        ) : null}
+        {showCacheHit ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text
+              color={
+                usage.cache_hit_pct! >= 70
+                  ? t.color.statusGood
+                  : usage.cache_hit_pct! >= 40
+                    ? t.color.statusWarn
+                    : t.color.muted
+              }
+            >
+              {cacheHitText}
+            </Text>
+          </Text>
+        ) : null}
+        {showLatency ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {latencyText}
+          </Text>
+        ) : null}
+        {showTps ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {tpsText}
+          </Text>
+        ) : null}
+        {showVoice ? (
+          <Text
+            color={
+              voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted
+            }
+            wrap="truncate-end"
+          >
+            {' │ '}
+            {voiceLabel}
           </Text>
         ) : null}
         {showSessionCount ? sessionCountNode : null}
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}⚙ {bgCount}
+            {' │ '}
+            {bgCount} bg
           </Text>
         ) : null}
         {showSubagents ? (
-          onSubagentClick ? (
-            <Box flexShrink={0} onClick={handleSubagentClick}>
-              <Text color={failedAgents > 0 ? t.color.warn : t.color.accent}> │ {subagentText}</Text>
-            </Box>
-          ) : (
-            <Text color={failedAgents > 0 ? t.color.warn : t.color.muted}> │ {subagentText}</Text>
-          )
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}⛓ {subagentCount}
+          </Text>
+        ) : null}
+        {showResumeHint ? (
+          <Text color={t.color.muted} dim wrap="truncate-end">
+            {' │ '}
+            {resumeHintText}
+          </Text>
         ) : null}
         {showDevCredits ? (
           <Text color={t.color.accent} wrap="truncate-end">
@@ -795,6 +816,9 @@ export function StatusRule({
             {devCreditsText}
           </Text>
         ) : null}
+        {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
+            renders last — any overflow truncates the HUD itself rather than the
+            budgeted segments before it. It self-hides when no delegation runs. */}
         <SpawnHud t={t} />
       </Box>
 
@@ -907,32 +931,34 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
-  activeToolName?: string
   battery?: BatteryInfo | null
   // Focus view (/focus) badge — display-only reduced-output indicator.
   focusView?: boolean
   bgCount: number
+  lastTurnEndedAt?: null | number
   liveSessionCount: number
   busy: boolean
+  // Context compaction in progress — FaceTicker freezes on "compacting".
+  compacting?: boolean
   cols: number
   cwdLabel: string
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
-  lastTurnEndedAt?: null | number
   notice?: Notice | null
   sessionStartedAt?: null | number
   sessionTitle?: string
-  subagents?: SubagentProgress[]
   status: string
+  // display.status_bar.fields — segment visibility filter shared with the
+  // classic CLI bar. null = defaults (everything shows).
+  statusBarFields?: null | ReadonlySet<string>
   statusColor: string
   t: Theme
   turnStartedAt?: null | number
   usage: Usage
   voiceLabel?: string
   onSessionCountClick?: () => void
-  onSubagentClick?: () => void
 }
 
 interface StickyPromptTrackerProps {

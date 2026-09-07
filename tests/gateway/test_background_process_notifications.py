@@ -9,6 +9,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 
 import asyncio
 import queue
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -293,6 +294,46 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_inject_watch_notification_loads_session_store_off_loop(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    runner.session_store._entries["agent:main:telegram:dm:123:24296"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            thread_id="24296",
+            user_id="1",
+            user_name="Fabio",
+        )
+    )
+    loop_thread = threading.get_ident()
+    load_threads = []
+    real_ensure_loaded = runner.session_store._ensure_loaded
+
+    def spy_ensure_loaded():
+        load_threads.append(threading.get_ident())
+        return real_ensure_loaded()
+
+    monkeypatch.setattr(runner.session_store, "_ensure_loaded", spy_ensure_loaded)
+
+    await runner._inject_watch_notification(
+        "[SYSTEM: Background process matched]",
+        {
+            "session_id": "proc_watch",
+            "session_key": "agent:main:telegram:dm:123:24296",
+            "message_id": "777",
+        },
+    )
+
+    adapter.handle_message.assert_awaited_once()
+    assert load_threads
+    assert all(thread_id != loop_thread for thread_id in load_threads)
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_ignores_foreground_event_source(monkeypatch, tmp_path):
     """Negative test: watch notification must NOT route to the foreground thread."""
     from gateway.session import SessionSource
@@ -537,6 +578,86 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
     assert result is True
     assert posts == ["raw-origin-sid"]
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_persists_delivery_not_self_post(
+    monkeypatch, tmp_path,
+):
+    """#85957: an async_delegation completion targeting a stateless api_server
+    session must be persisted as a durable DELIVERY row — never self-POSTed
+    to /v1/chat/completions as a new role=user prompt (which starts an
+    unauthorized agent turn after the client-owned parent turn ended)."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AsyncMock(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    import gateway.wake as wake_mod
+
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append(session_id)
+
+    persisted = []
+
+    async def fake_persist(adapter, *, text, session_id, evt=None):
+        persisted.append({"text": text, "session_id": session_id, "evt": evt})
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fake_persist)
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_85957",
+        "session_key": "raw-hq-session-id",  # no agent:main:... structure
+        "origin_session_id": "raw-hq-session-id",
+        "status": "completed",
+    }
+    result = await runner._inject_watch_notification(
+        "[ASYNC DELEGATION BATCH COMPLETE — deleg_85957]", evt,
+    )
+
+    assert result is True
+    assert posts == []  # the self-POST user-turn wake must NOT fire
+    api_adapter.handle_message.assert_not_awaited()
+    assert len(persisted) == 1
+    assert persisted[0]["session_id"] == "raw-hq-session-id"
+    assert persisted[0]["evt"]["delegation_id"] == "deleg_85957"
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_persist_failure_is_retryable(
+    monkeypatch, tmp_path,
+):
+    """A failed delivery persist returns False so the durable claim is
+    released and the completion retried — never silently lost."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AsyncMock(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    import gateway.wake as wake_mod
+
+    async def fail_persist(adapter, *, text, session_id, evt=None):
+        raise RuntimeError("state.db unavailable")
+
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fail_persist)
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_fail",
+        "session_key": "raw-sid",
+    }
+    result = await runner._inject_watch_notification("[BATCH COMPLETE]", evt)
+    assert result is False
 
 
 def test_gateway_drain_retains_and_formats_overflow_events():
