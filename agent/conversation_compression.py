@@ -3540,7 +3540,8 @@ def _announce_compression_start(
 def compress_context(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
-    bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
+    bypass_cooldown: bool = False, force_session_rotation: bool = False,
+    defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
@@ -3594,7 +3595,7 @@ def compress_context(
     _pre_msg_count = len(messages)
     # In-place keeps the SAME session_id (no rotation/child/renumber/re-sync). A
     # missing attribute must default True, not rotation, which can wedge sessions.
-    in_place = bool(getattr(agent, "compression_in_place", True))
+    in_place = bool(getattr(agent, "compression_in_place", True)) and not force_session_rotation
     lifecycle = _announce_compression_start(
         agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
     )

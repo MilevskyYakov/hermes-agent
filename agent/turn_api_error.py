@@ -16,6 +16,8 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.message_sanitization import close_interrupted_tool_sequence
+from agent.retry_utils import jittered_backoff
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
@@ -331,6 +333,54 @@ def settle_unrecovered_error(
             _retry.has_retried_429 = False
             agent._fallback_index = 0
             agent._fallback_activated = False
+            return _verdict("continue")
+        if (
+            getattr(agent, "platform", None) in {"cli", "tui"}
+            and not getattr(agent, "_consecutive_stale_streams", 0)
+            and agent._try_recover_primary_transport(
+                api_error, retry_count=retry_count, max_retries=max_retries, wait=False,
+            )
+        ):
+            _retry.transient_recovery_cycles += 1
+            retry_count = 0
+            _retry.has_retried_429 = False
+            agent._fallback_index = 0
+            agent._fallback_activated = False
+            wait_time = jittered_backoff(
+                _retry.transient_recovery_cycles, base_delay=5.0, max_delay=60.0,
+            )
+            agent._flush_status_buffer()
+            agent._emit_status(
+                "⏳ Provider temporarily unavailable. "
+                f"Hermes will retry automatically in {wait_time:.1f}s "
+                f"(recovery cycle {_retry.transient_recovery_cycles}). Interrupt to stop."
+            )
+            logger.warning(
+                "Transient turn recovery cycle=%s delay=%ss reason=%s %s",
+                _retry.transient_recovery_cycles, wait_time, classified.reason.value,
+                agent._client_log_context(),
+            )
+            sleep_end = time.time() + wait_time
+            touch_counter = 0
+            while time.time() < sleep_end:
+                if agent._interrupt_requested:
+                    if agent.clear_interrupt(preserve_redirect=True):
+                        _retry.restart_with_redirected_messages = True
+                        return _verdict("break")
+                    interrupt_text = "Operation interrupted: waiting for provider recovery."
+                    close_interrupted_tool_sequence(messages, interrupt_text)
+                    agent._persist_session(messages, conversation_history)
+                    agent.clear_interrupt()
+                    return _verdict("return", {
+                        "final_response": interrupt_text, "messages": messages,
+                        "api_calls": api_call_count, "completed": False, "interrupted": True,
+                    })
+                time.sleep(0.2)
+                touch_counter += 1
+                if touch_counter % 150 == 0:
+                    agent._touch_activity(
+                        f"transient provider recovery, {int(sleep_end - time.time())}s remaining"
+                    )
             return _verdict("continue")
         if agent._has_pending_fallback():
             agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")

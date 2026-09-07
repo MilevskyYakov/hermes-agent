@@ -2128,6 +2128,20 @@ def _init_usage_state(agent):
     _set_defaults(agent, _USAGE_STATE)
 
 
+def _init_session_lifecycle(agent, agent_cfg: Dict[str, Any]) -> None:
+    cfg = _cfg_dict(agent_cfg, "session_lifecycle")
+    agent.session_lifecycle_enabled = is_truthy_value(cfg.get("enabled"), default=False)
+    agent.session_lifecycle_checkpoint_calls = max(1, _parse_config_int(cfg.get("checkpoint_calls", 50), 50))
+    agent.session_lifecycle_transition_calls = max(
+        agent.session_lifecycle_checkpoint_calls,
+        _parse_config_int(cfg.get("transition_calls", 100), 100),
+    )
+    agent._lifecycle_checkpoint_written = False
+    agent._lifecycle_persisted_calls = None
+    agent._lifecycle_call_offset = 0
+    agent._lifecycle_unsafe_operation = None
+
+
 # Per-session usage accounting.
 _USAGE_STATE: Dict[str, Any] = {
     "_user_turn_count": 0,
@@ -2306,6 +2320,7 @@ def init_agent(
     _init_memory(agent, _agent_cfg, skip_memory, platform)
     _apply_agent_section(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)
+    _init_session_lifecycle(agent, _agent_cfg)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )

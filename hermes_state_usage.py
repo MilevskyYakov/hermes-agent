@@ -89,7 +89,7 @@ _CODEX_ACCOUNT_USAGE_UPSERT_SQL = """INSERT INTO codex_account_usage (
 _MODEL_USAGE_FIELDS = frozenset((
     "model", "billing_provider", "billing_base_url", "billing_mode", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
-    "actual_cost_usd", "cost_status", "cost_source", "api_call_count"))
+    "actual_cost_usd", "cost_status", "cost_source", "api_call_count", "account_alias"))
 
 
 class SessionUsageMixin:
@@ -374,6 +374,7 @@ class SessionUsageMixin:
         output_tokens: int=0, cache_read_tokens: int=0, cache_write_tokens: int=0, reasoning_tokens: int=0,
         estimated_cost_usd: Optional[float]=None, actual_cost_usd: Optional[float]=None,
         cost_status: Optional[str]=None, cost_source: Optional[str]=None, api_call_count: int=0, task: str="",
+        account_alias: Optional[str]=None,
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage, inside the caller's
         write txn after the ``sessions`` UPDATE. A missing model/provider falls back to
@@ -397,6 +398,29 @@ class SessionUsageMixin:
             billing_base_url or sess.get("billing_base_url") or "",
             billing_mode or sess.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
             float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0), cost_status, cost_source, now, now))
+        if billing_provider == "openai-codex" and account_alias in {"A", "B"}:
+            from agent.codex_account_usage import week_start_timestamp
+
+            week_start = week_start_timestamp(now)
+            conn.execute(
+                """INSERT INTO codex_account_usage (
+                       session_id, account_alias, week_start, model,
+                       api_call_count, input_tokens, output_tokens,
+                       cache_read_tokens, first_seen, last_seen
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(session_id, account_alias, week_start, model)
+                   DO UPDATE SET
+                       api_call_count = api_call_count + excluded.api_call_count,
+                       input_tokens = input_tokens + excluded.input_tokens,
+                       output_tokens = output_tokens + excluded.output_tokens,
+                       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                       last_seen = excluded.last_seen""",
+                (
+                    session_id, account_alias, week_start, model or sess.get("model") or "unknown",
+                    api_call_count or 0, input_tokens or 0, output_tokens or 0,
+                    cache_read_tokens or 0, now, now,
+                ),
+            )
 
     def record_auxiliary_usage(
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

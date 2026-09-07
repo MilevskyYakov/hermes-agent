@@ -189,7 +189,7 @@ class CompressionFacadeMixin:
     def _compress_context(
         self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default",
         focus_topic: str = None, force: bool = False, bypass_cooldown: bool = False,
-        defer_context_engine_notification: bool = False, commit_fence=None,
+        force_session_rotation: bool = False, defer_context_engine_notification: bool = False, commit_fence=None,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
         ``force=True`` (manual /compress) bypasses the summary-failure cooldown; ``bypass_cooldown=True``
@@ -246,7 +246,7 @@ class CompressionFacadeMixin:
                 return compress_context(
                     self, target_messages if target_messages is not None else messages, system_message,
                     approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
-                    bypass_cooldown=bypass_cooldown,
+                    bypass_cooldown=bypass_cooldown, force_session_rotation=force_session_rotation,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
                 )
 

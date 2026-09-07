@@ -319,4 +319,3 @@ def _skill_route_finish(
             logger.debug("core toolset preset selection failed", exc_info=True)
     logger.info("skill_routing skill=%s outcome=%s", canonical, outcome)
     return json.dumps(payload, ensure_ascii=False)
-

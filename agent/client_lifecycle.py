@@ -858,6 +858,13 @@ class ClientLifecycleMixin:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
         self._credential_pool_entry_id = getattr(entry, "id", None)
+        pool = getattr(self, "_credential_pool", None)
+        alias_for = getattr(pool, "account_alias_for_entry_id", None)
+        self._codex_account_alias = (
+            alias_for(self._credential_pool_entry_id)
+            if callable(alias_for) and getattr(pool, "provider", None) == "openai-codex"
+            else None
+        )
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
         stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base

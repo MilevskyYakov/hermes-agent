@@ -28,7 +28,7 @@ from agent.prompt_caching import (
     strip_anthropic_tool_cache_control,
 )
 from agent.runtime_cwd import resolve_agent_cwd
-from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import PreflightCompressionTimedOut, build_turn_context, reanchor_current_turn_user_idx
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
@@ -1355,6 +1355,46 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     return verdict
 
 
+def _apply_runtime_transitions(agent, state: _LoopState) -> None:
+    """Apply safe linked-session transitions only between complete iterations."""
+    try:
+        from agent.model_router import request_luna_escalation_if_due
+        from agent.session_lifecycle import transition_for_model_escalation
+
+        request_luna_escalation_if_due(agent)
+        messages, prompt, rotated = transition_for_model_escalation(
+            agent, state.messages, state.active_system_prompt, state.effective_task_id
+        )
+        if rotated:
+            state.messages, state.active_system_prompt = messages, prompt
+            state.conversation_history = list(messages)
+            state.current_turn_user_idx = reanchor_current_turn_user_idx(messages, state.user_message)
+            agent._persist_user_message_idx = state.current_turn_user_idx
+    except Exception:
+        logger.warning("model escalation transition failed", exc_info=True)
+    try:
+        from agent.session_lifecycle import transition_if_due
+
+        messages, prompt, rotated = transition_if_due(
+            agent, state.messages, state.active_system_prompt, state.effective_task_id
+        )
+        if rotated:
+            state.messages, state.active_system_prompt = messages, prompt
+            state.conversation_history = list(messages)
+            state.current_turn_user_idx = reanchor_current_turn_user_idx(messages, state.user_message)
+            agent._persist_user_message_idx = state.current_turn_user_idx
+    except Exception:
+        logger.warning("safe session lifecycle transition failed", exc_info=True)
+    try:
+        from agent.session_toolsets import rebuild_prompt_if_dirty
+
+        prompt = rebuild_prompt_if_dirty(agent, state.system_message)
+        if prompt is not None:
+            state.active_system_prompt = prompt
+    except Exception:
+        logger.debug("session toolset prompt rebuild skipped", exc_info=True)
+
+
 def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     """One API call with its retry/recovery loop (guard → build → call → check, error handlers).
 
@@ -1477,6 +1517,7 @@ def run_conversation(
         )
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        _apply_runtime_transitions(agent, s)
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)

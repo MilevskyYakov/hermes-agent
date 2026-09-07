@@ -836,6 +836,12 @@ def build_turn_context(
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
+    try:
+        from agent.session_toolsets import start_session_bootstrap
+
+        start_session_bootstrap(agent, has_history=bool(conversation_history))
+    except Exception:
+        logger.debug("session toolset bootstrap skipped", exc_info=True)
     user_msg, pending_cli_message = _stage_turn_user_message(
         agent, user_message, persist_user_message, persist_user_timestamp,
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,

@@ -261,6 +261,7 @@ def record_response_usage(
                 billing_mode="subscription_included"
                 if cost_result.status == "included" else None,
                 model=agent.model,
+                account_alias=getattr(agent, "_codex_account_alias", None),
                 api_call_count=1,
             )
         except Exception as e:  # silent loss here undercounts analytics

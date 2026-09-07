@@ -77,7 +77,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
-    "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview",
+    "todo_list", "session_search", "memory", "clarify", "tool_expand", "read_terminal", "desktop_preview",
     "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "gui_tour", "delegate_task",
 })
 
@@ -643,8 +643,15 @@ def sync_credential_pool_entry_id(agent) -> None:
         agent._credential_pool_entry_id = (
             pool.entry_id_for_api_key(getattr(agent, "api_key", None)) if pool is not None else None
         )
+        alias_for = getattr(pool, "account_alias_for_entry_id", None)
+        agent._codex_account_alias = (
+            alias_for(agent._credential_pool_entry_id)
+            if callable(alias_for) and getattr(pool, "provider", None) == "openai-codex"
+            else None
+        )
     except Exception:
         agent._credential_pool_entry_id = None
+        agent._codex_account_alias = None
 
 
 _STATUS_TO_FAILOVER_REASON = {
@@ -928,6 +935,7 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
 
 def try_recover_primary_transport(
     agent, api_error: Exception, *, retry_count: int, max_retries: int,
+    wait: bool = True,
 ) -> bool:
     """Rebuild the primary client once and retry after ``max_retries`` exhaust on a transient
     transport error. Skipped for aggregators (OpenRouter, Nous) that manage retries server-side."""
@@ -964,12 +972,13 @@ def try_recover_primary_transport(
             agent.client = build_moa_facade(agent, agent.model)
         else:
             agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason="primary_recovery", shared=True)
-        wait_time = min(3 + retry_count, 8)
-        agent._vprint(
-            f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
-            f"rebuilt client, waiting {wait_time}s before one last primary attempt.", force=True,
-        )
-        time.sleep(wait_time)
+        if wait:
+            wait_time = min(3 + retry_count, 8)
+            agent._vprint(
+                f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
+                f"rebuilt client, waiting {wait_time}s before one last primary attempt.", force=True,
+            )
+            time.sleep(wait_time)
         return True
     except Exception as e:
         logger.warning("Primary transport recovery failed: %s", e)

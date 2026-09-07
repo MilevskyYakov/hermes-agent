@@ -191,6 +191,12 @@ def check_api_response(
     if _usage_outcome.rearmed:
         _preflight_compression_blocked = False
         _last_preflight_pressure = None
+    try:
+        from agent.session_lifecycle import checkpoint_if_due
+
+        checkpoint_if_due(agent, messages, effective_task_id)
+    except Exception:
+        logger.warning("session lifecycle checkpoint failed", exc_info=True)
 
     _retry.has_retried_429 = False
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.

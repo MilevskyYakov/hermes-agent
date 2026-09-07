@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from agent.agent_runtime_helpers import sync_credential_pool_entry_id
 from agent.codex_account_usage import (
     codex_credits,
     week_start_timestamp,
@@ -60,6 +63,29 @@ def test_rate_card_and_weekly_attribution(tmp_path):
     assert "jwt" not in telemetry_dump
     assert "token" not in telemetry_dump
     assert "account_id" not in telemetry_dump
+    db.close()
+
+
+def test_runtime_alias_flows_from_pool_to_usage_row(tmp_path):
+    pool = SimpleNamespace(
+        provider="openai-codex",
+        entry_id_for_api_key=lambda _key: "entry-a",
+        account_alias_for_entry_id=lambda entry_id: "A" if entry_id == "entry-a" else None,
+    )
+    agent = SimpleNamespace(_credential_pool=pool, api_key="test-key")
+    sync_credential_pool_entry_id(agent)
+
+    db = SessionDB(tmp_path / "state.db")
+    db.ensure_session("session")
+    db.update_token_counts(
+        "session", model="gpt-5.6-sol", billing_provider="openai-codex",
+        account_alias=agent._codex_account_alias, input_tokens=1, api_call_count=1,
+    )
+    assert db._conn is not None
+    row = db._conn.execute(
+        "SELECT account_alias, input_tokens FROM codex_account_usage"
+    ).fetchone()
+    assert tuple(row) == ("A", 1)
     db.close()
 
 
