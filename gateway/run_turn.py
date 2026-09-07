@@ -180,6 +180,30 @@ class GatewayTurnMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
+        from gateway.session_context import get_session_env
+
+        session_id = get_session_env("HERMES_SESSION_ID", "")
+        routed_sessions = getattr(self, "_model_routed_sessions", None)
+        if routed_sessions is None:
+            routed_sessions = self._model_routed_sessions = set()
+        if session_id and session_id not in routed_sessions:
+            routed_sessions.add(session_id)
+            try:
+                from agent.model_router import apply_route, route_first_task
+                from hermes_cli.config import load_config
+
+                model_route = route_first_task(
+                    user_message, config=load_config(), main_model=model,
+                    main_runtime=runtime, session_id=session_id,
+                )
+                route = apply_route(route, model_route)
+                route["signature"] = (
+                    route["model"], runtime["provider"], runtime["requested_provider"],
+                    runtime["base_url"], runtime["api_mode"], runtime["command"],
+                    tuple(runtime["args"]), (route.get("reasoning_config") or {}).get("effort"),
+                )
+            except Exception as exc:
+                logger.warning("Model router failed closed to primary route: %s", type(exc).__name__)
         if getattr(self, "_service_tier", None) != "priority":
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
@@ -2162,7 +2186,7 @@ class GatewayTurnMixin:
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
-                    reasoning_config=reasoning_config,
+                    reasoning_config=turn_route.get("reasoning_config") or reasoning_config or {},
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),

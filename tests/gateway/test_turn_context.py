@@ -69,11 +69,13 @@ class TestTurnRunner:
         runner = _make_runner(ctx)  # stub adapter resolver returns None
         assert asyncio.run(runner.send_progress_messages()) is None
 
-    def test_normal_response_preserves_compression_exhausted(self):
+    @pytest.mark.parametrize("routed", [False, True])
+    def test_normal_response_preserves_compression_exhausted(self, routed):
         """A non-empty exhaustion response must still reach auto-reset consumers."""
 
         class _ExhaustedAgent:
             def __init__(self, **kwargs):
+                assert kwargs["reasoning_config"] == ({"effort": "medium"} if routed else {})
                 self.model = kwargs["model"]
                 self.session_id = kwargs["session_id"]
                 self.tools = []
@@ -85,6 +87,9 @@ class TestTurnRunner:
                 self.session_completion_tokens = 0
 
             def run_conversation(self, _message, **_kwargs):
+                if routed:
+                    assert getattr(self, "_model_route_tier") == "sol_medium"
+                    assert getattr(self, "reasoning_config") == {"effort": "medium"}
                 return {
                     "final_response": "Context length exceeded. Cannot compress further.",
                     "failed": True,
@@ -110,6 +115,11 @@ class TestTurnRunner:
             "model": "test-model",
             "runtime": {},
         }
+        if routed:
+            gateway_runner._resolve_turn_agent_config.return_value.update({
+                "reasoning_config": {"effort": "medium"},
+                "model_route": {"effective_tier": "sol_medium", "visible_line": "Model: Sol Medium"},
+            })
         gateway_runner._agent_config_signature.return_value = ("test-signature",)
         gateway_runner._extract_cache_busting_config.return_value = {}
         gateway_runner._refresh_fallback_model.return_value = None
@@ -145,3 +155,29 @@ class TestTurnRunner:
             "Context length exceeded. Cannot compress further."
         )
         assert result["compression_exhausted"] is True
+
+    def test_model_proposal_does_not_construct_agent(self, monkeypatch):
+        from gateway.run_turn_runner import TurnRunner
+
+        gateway_runner = MagicMock()
+        gateway_runner._resolve_session_agent_runtime.return_value = ("test-model", {})
+        gateway_runner._resolve_turn_agent_config.return_value = {
+            "model_route": {"proposal_required": True, "visible_line": "Confirm higher tier"},
+        }
+        ctx = TurnContext(
+            source=SessionSource(platform=Platform.LOCAL, chat_id="test-chat"),
+            message="task", user_config={}, AIAgent=MagicMock(),
+        )
+        turn = TurnRunner(gateway_runner, ctx)
+        monkeypatch.setattr(turn, "_combined_ephemeral_prompt", lambda: "")
+        monkeypatch.setattr(turn, "_setup_stream_consumer", lambda _: (None, None, MagicMock(), False))
+        construct = MagicMock()
+        monkeypatch.setattr(turn, "_resolve_turn_agent", construct)
+
+        result = turn.run_sync()
+
+        construct.assert_not_called()
+        ctx.AIAgent.assert_not_called()
+        assert result["api_calls"] == 0
+        assert result["completed"] is False
+        assert "Confirm higher tier" in result["final_response"]

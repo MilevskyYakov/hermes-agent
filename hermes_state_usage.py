@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-from datetime import datetime, timedelta, timezone
 import logging
 import threading
 import time
@@ -69,18 +68,6 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
                    cost_status = COALESCE(excluded.cost_status, cost_status),
                    cost_source = COALESCE(excluded.cost_source, cost_source),
-                   last_seen = excluded.last_seen"""
-
-_CODEX_ACCOUNT_USAGE_UPSERT_SQL = """INSERT INTO codex_account_usage (
-                   session_id, account_alias, week_start, model, api_call_count,
-                   input_tokens, output_tokens, cache_read_tokens, first_seen, last_seen
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, account_alias, week_start, model)
-               DO UPDATE SET
-                   api_call_count = api_call_count + excluded.api_call_count,
-                   input_tokens = input_tokens + excluded.input_tokens,
-                   output_tokens = output_tokens + excluded.output_tokens,
-                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
                    last_seen = excluded.last_seen"""
 
 
@@ -342,31 +329,7 @@ class SessionUsageMixin:
             conn.execute(sql, params)
             if record_model_usage:
                 self._record_model_usage(conn, session_id, **usage)
-                self._record_codex_account_usage(
-                    conn, session_id, account_alias=account_alias, model=model,
-                    billing_provider=billing_provider, input_tokens=input_tokens,
-                    output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
-                    api_call_count=api_call_count,
-                )
         self._execute_write(_do)
-
-    @staticmethod
-    def _record_codex_account_usage(
-        conn, session_id: str, *, account_alias: Optional[str], model: Optional[str],
-        billing_provider: Optional[str], input_tokens: int, output_tokens: int,
-        cache_read_tokens: int, api_call_count: int,
-    ) -> None:
-        if account_alias not in {"A", "B"} or billing_provider != "openai-codex" or not model:
-            return
-        now = time.time()
-        current = datetime.fromtimestamp(now, tz=timezone.utc)
-        week_start = (current - timedelta(days=current.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0,
-        ).timestamp()
-        conn.execute(_CODEX_ACCOUNT_USAGE_UPSERT_SQL, (
-            session_id, account_alias, week_start, model, api_call_count or 0,
-            input_tokens or 0, output_tokens or 0, cache_read_tokens or 0, now, now,
-        ))
 
     def _record_model_usage(
         self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

@@ -1638,9 +1638,22 @@ class TurnRunner:
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        model_route = turn_route.get("model_route")
+        if model_route and model_route.get("proposal_required"):
+            from agent.model_router import proposal_response
+
+            return {"final_response": proposal_response(model_route), "messages": [],
+                    "api_calls": 0, "tools": [], "completed": False}
+        if model_route:
+            interim_cb(model_route["visible_line"])
+        reasoning_config = turn_route.get("reasoning_config") or reasoning_config or {}
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        if model_route:
+            from agent.model_router import attach_route
+
+            attach_route(agent, model_route)
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)

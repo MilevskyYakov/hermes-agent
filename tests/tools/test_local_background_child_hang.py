@@ -96,7 +96,7 @@ class TestBackgroundChildDoesNotHang:
         assert len(result["output"]) > 200000
 
     def test_bounded_capture_spills_complete_output(self, local_env, tmp_path, monkeypatch):
-        monkeypatch.setattr("tools.tool_result_storage.LOCAL_STORAGE_DIR", tmp_path)
+        monkeypatch.setattr("tools.environments.base_output.get_hermes_home", lambda: tmp_path)
         command = (
             "python3 -c \"import sys; "
             "sys.stdout.write('START-MARK\\n' + ('y' * 200000) + '\\nEND-MARK')\""
@@ -106,12 +106,16 @@ class TestBackgroundChildDoesNotHang:
 
         assert result["returncode"] == 0
         assert len(result["output"]) <= 50 * 1024
-        assert result["full_chars"] == 200_020
         full_path = result["full_output_path"]
         full = open(full_path, encoding="utf-8").read()
+        assert len(full) == result["output_total_chars"]
+        # Upstream spills the raw process stream, including its CWD trailer.
+        cleaned = {"output": full}
+        local_env._extract_cwd_from_output(cleaned)
+        full = cleaned["output"]
         assert full.startswith("START-MARK")
         assert full.endswith("END-MARK")
-        assert len(full) == result["full_chars"]
+        assert len(full) == 200_020
 
 
     def test_utf8_multibyte_across_read_boundary(self, local_env):
