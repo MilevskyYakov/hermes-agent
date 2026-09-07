@@ -326,10 +326,9 @@ def test_always_on_skill_is_part_of_stable_prompt(monkeypatch):
     monkeypatch.setattr("agent.system_prompt.get_always_on_skill_names", lambda: ["caveman"])
 
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
         patch(
             "agent.skill_commands.build_preloaded_skills_prompt",
             return_value=("CAVEMAN FULL GUIDANCE", ["caveman"], []),

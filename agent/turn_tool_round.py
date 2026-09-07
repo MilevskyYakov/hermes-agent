@@ -149,7 +149,24 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
-    agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    from tools.skills_tool import skill_routing_context
+
+    with skill_routing_context(
+        messages,
+        agent.session_id or "",
+        getattr(agent, "_current_turn_id", "") or effective_task_id,
+        agent=agent,
+    ):
+        agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+    try:
+        from agent.session_toolsets import rebuild_prompt_if_dirty
+
+        rebuilt_prompt = rebuild_prompt_if_dirty(agent, system_message)
+        if rebuilt_prompt is not None:
+            active_system_prompt = rebuilt_prompt
+    except Exception:
+        logger.debug("session toolset prompt rebuild skipped", exc_info=True)
 
     if getattr(agent, "_incremental_persistence_failed", False):
         # Tool result could not be made canonical: never send the in-memory result to

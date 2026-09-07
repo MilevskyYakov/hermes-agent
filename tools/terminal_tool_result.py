@@ -158,6 +158,40 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
+def _redact_terminal_spill(path: str, command: str) -> int | None:
+    """Force-redact a completed spill before exposing its path."""
+    from agent.redact import redact_terminal_output
+
+    temp_path = f"{path}.redact.tmp"
+    pending = ""
+    written_chars = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as source, open(
+            temp_path, "x", encoding="utf-8", newline=""
+        ) as target:
+            while chunk := source.read(64 * 1024):
+                pending += chunk
+                if len(pending) <= 72 * 1024:
+                    continue
+                redacted = redact_terminal_output(pending[:-8192], command, force=True)
+                target.write(redacted)
+                written_chars += len(redacted)
+                pending = pending[-8192:]
+            redacted = redact_terminal_output(pending, command, force=True)
+            target.write(redacted)
+            written_chars += len(redacted)
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+        return written_chars
+    except (OSError, UnicodeError):
+        logger.warning("Could not securely redact terminal output spill", exc_info=True)
+        with _quiet("spill redaction cleanup"):
+            os.unlink(temp_path)
+        return None
+
+
 def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
     re-running. The collector wrote it raw; redact it with the same pass so no
@@ -165,23 +199,18 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
     if not path:
         return []
     try:
-        from agent.redact import redact_terminal_output
-        from tools.ansi_strip import strip_ansi
-        from tools.spill_safety import write_text_exclusive
-        raw_spill = Path(path).read_text(encoding="utf-8", errors="replace")
-        # lstat-checked unlink + exclusive create: the redacted copy can't
-        # be diverted through a symlink planted since the collector's write.
-        write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),
-                             private=True, overwrite=True, errors="replace")
+        redacted_chars = _redact_terminal_spill(str(path), command)
+        if redacted_chars is None:
+            raise OSError("spill redaction failed")
     except Exception:
         logger.debug("spill redaction failed; dropping spill handle", exc_info=True)
         with _quiet("spill unlink"):
             Path(path).unlink()
         return []
     note = ("Output exceeded the capture window (head+tail shown). "
-            f"Full output ({total_chars:,} chars) saved to {path} — search it with "
+            f"Full output ({redacted_chars:,} chars) saved to {path} — search it with "
             "search_files or page it with read_file instead of re-running the command.")
-    return [("output_total_chars", total_chars), ("full_output_path", path), ("truncation_note", note)]
+    return [("output_total_chars", redacted_chars), ("full_output_path", path), ("truncation_note", note)]
 
 
 def _verification_evidence(command, cwd, session_id, returncode, output) -> Optional[dict]:

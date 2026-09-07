@@ -1054,8 +1054,8 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+# v3 adds activation metadata used for core/manual/capability routing labels.
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1132,6 +1132,11 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
     }
+    metadata = frontmatter.get("metadata")
+    gerda = metadata.get("gerda") if isinstance(metadata, dict) else None
+    activation = gerda.get("activation") if isinstance(gerda, dict) else None
+    if isinstance(activation, dict):
+        entry["activation"] = activation
     if org_id:
         entry["org_id"] = org_id
         try:  # author from the pull-time provenance sidecar; best-effort
@@ -1263,6 +1268,15 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         name_owners.setdefault(_entry_name(entry), set()).add("org" if entry.get("org_id") else "personal")
     for entry in visible_entries:
         fm, desc, org_id = _entry_name(entry), entry.get("description", ""), entry.get("org_id")
+        activation = entry.get("activation") or {}
+        if activation.get("auto") == "core":
+            desc = f"[core] {desc}".strip()
+        elif activation.get("always") or activation.get("dependency"):
+            desc = f"[capability] {desc}".strip()
+        elif activation.get("auto") == "none" and (
+            activation.get("direct") or activation.get("slash")
+        ):
+            desc = f"[manual] {desc}".strip()
         if org_id:
             author = entry.get("org_author") or ""
             desc = f"[org-shared{': by ' + author if author else ''}] {desc}".strip()
@@ -1303,11 +1317,14 @@ def _render_skills_index(
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
     return (
-        "## Skills\n"
-        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
-        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
-        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
-        "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
+        "## Skills (mandatory)\n"
+        "Before replying, scan the skills below. Select at most one matching [core] skill "
+        "for the current user turn and load it with skill_view(name). Exact slash/direct "
+        "invocation of a [manual] skill wins and manual skills must never be auto-loaded. "
+        "A [capability] may support the selected workflow without becoming a second core; "
+        "load it with skill_view(name, as_dependency=true). "
+        "Do not load the same skill twice in one session unless its result was explicitly "
+        "marked [SKILL_PRUNED]. Skills contain specialized knowledge — API endpoints, tool-specific "
         "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
         f"even if you think you could handle the task with basic tools like {_basic_tools}. "
         "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "

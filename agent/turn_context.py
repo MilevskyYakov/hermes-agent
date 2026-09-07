@@ -807,6 +807,12 @@ def build_turn_context(
     agent._restore_primary_runtime()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
+    try:
+        from agent.session_toolsets import start_session_bootstrap
+
+        start_session_bootstrap(agent, has_history=bool(conversation_history))
+    except Exception:
+        logger.debug("session toolset bootstrap skipped", exc_info=True)
 
     if isinstance(user_message, str):
         user_message = sanitize_surrogates(user_message)

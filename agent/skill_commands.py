@@ -573,7 +573,9 @@ def _load_skill_blocks(
     return loaded_names, missing, disabled, blocks
 
 
-def build_preloaded_skills_prompt(skill_identifiers: list[str], task_id: str | None = None) -> tuple[str, list[str], list[str]]:
+def build_preloaded_skills_prompt(
+    skill_identifiers: list[str], task_id: str | None = None, *, always_on: bool = False,
+) -> tuple[str, list[str], list[str]]:
     """Load skills for session-wide CLI/TUI preloading; returns (prompt_text,
     loaded_skill_names, missing_identifiers). Disabled skills count as missing:
     this path bypasses the scan-time filter, and ``hermes -s <skill>`` must not
@@ -586,9 +588,15 @@ def build_preloaded_skills_prompt(skill_identifiers: list[str], task_id: str | N
     loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
         [(raw or "").strip() for raw in skill_identifiers],
         lambda identifier: _load_skill_payload(identifier, task_id=task_id),
-        lambda name: (f'[IMPORTANT: The user launched this CLI session with the "{name}" skill '
-                      "preloaded. Treat its instructions as active guidance for the duration of this "
-                      "session unless the user overrides them.]"),
+        lambda name: (
+            f'[IMPORTANT: The "{name}" skill is configured as always-on. Treat its '
+            "instructions as active guidance for every response in this session unless the "
+            "user overrides them.]"
+            if always_on
+            else f'[IMPORTANT: The user launched this CLI session with the "{name}" skill '
+            "preloaded. Treat its instructions as active guidance for the duration of this "
+            "session unless the user overrides them.]"
+        ),
         task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
     )
     return "\n\n".join(prompt_parts), loaded_names, missing

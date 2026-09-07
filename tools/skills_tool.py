@@ -26,6 +26,9 @@ from tools.skills_tool_plugin import (  # noqa: F401
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
 from tools.skills_tool_dedup import (  # noqa: F401
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
+from tools.skills_tool_routing import (  # noqa: F401
+    _reset_skill_routing_state, _skill_route_finish, _skill_route_precheck,
+    _skill_route_pruned_reload_pending, skill_routing_context)
 
 logger = logging.getLogger(__name__)
 
@@ -626,6 +629,10 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "as_dependency": {
+                "type": "boolean",
+                "description": "Set true only when loading an activation.dependency capability for the already-selected workflow. Does not select a second core.",
+            },
         },
         "required": ["name"],
     },
@@ -638,23 +645,36 @@ registry.register(
 
 
 def _skill_view_with_bump(args, **kw):
-    """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
-    mirrors read_file's unchanged-stub: a SAME, unchanged skill file already loaded in this
-    session returns a short stub (cache cleared on context compression)."""
+    """Invoke skill_view, enforce routing, then record successful full loads."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
+    force_pruned_reload = _skill_route_pruned_reload_pending(name, args.get("file_path"))
+    cached = _skill_route_precheck(name, args.get("file_path"))
+    if cached is not None:
+        return cached
+    stub = None if force_pruned_reload else _check_skill_view_dedup(
+        task_id, name, args.get("file_path")
+    )
+    if stub is not None:
         return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    result = _skill_route_finish(
+        name,
+        result,
+        args.get("file_path"),
+        as_dependency=args.get("as_dependency") is True,
+    )
     with suppress(Exception):
         parsed = json.loads(result)
-        if isinstance(parsed, dict) and parsed.get("success"):
+        if (
+            isinstance(parsed, dict)
+            and parsed.get("success")
+            and parsed.get("load_state") != "cached"
+        ):
             _record_skill_view(task_id, name, args.get("file_path"), parsed)
-            if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
+            if resolved := parsed.get("name") or name:
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))
-                # Viewing is actively loading the skill to act on it — that counts as use
-                # (the curator's stale timer keys off last_used_at).
                 bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
     return result
 

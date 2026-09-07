@@ -4,6 +4,7 @@ import os
 
 import tools.terminal_tool as terminal_tool
 import tools.terminal_tool_sudo as terminal_tool_sudo
+from tools.terminal_tool_result import _redact_terminal_spill
 
 
 def setup_function():
@@ -20,7 +21,7 @@ def test_terminal_spill_redaction_is_atomic_and_forced(tmp_path, monkeypatch):
     path = tmp_path / "terminal.txt"
     path.write_text("x" * 65_530 + f"\nAPI_KEY={secret}\n" + "y" * 20_000)
 
-    chars = terminal_tool._redact_terminal_spill(str(path), "printenv")
+    chars = _redact_terminal_spill(str(path), "printenv")
     content = path.read_text()
 
     assert chars == len(content)

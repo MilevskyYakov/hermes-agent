@@ -133,6 +133,12 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
     return result
 
 
+def _tool_expand(agent, args: dict, ctx: InlineToolContext) -> Any:
+    from agent.session_toolsets import expand_full_toolset
+
+    return expand_full_toolset(agent, str(args.get("reason") or ""))
+
+
 _read_preview = _callback_tool(
     "tools.read_preview_tool", "read_preview_tool", "read_preview_callback",
     ("start", "start"), ("count", "count"),
@@ -163,6 +169,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     ),
     "session_search": _session_search,
     "memory": _memory,
+    "tool_expand": _tool_expand,
     "clarify": _tool(
         "tools.clarify_tool", "clarify_tool",
         ("question", "question", ""), ("choices", "choices"), ("multi_select", "multi_select", False),

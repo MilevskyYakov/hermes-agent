@@ -88,6 +88,7 @@ _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}  # process-scoped: (pr
 _approval_lock = threading.Lock()
 _session_auto_approve: Dict[str, bool] = {}   # sid -> "always_approve everything"
 _always_allow: Dict[str, set] = {}            # sid -> set of (action, delivery_mode) scope keys
+_task_grants: set[str] = set()                # sid -> explicit current-task desktop grant
 _escalation_warned: set = set()               # sids already warned that a bypass widened the driver mode
 
 def _cua_permission_mode(session_id: str) -> str:
@@ -183,6 +184,7 @@ def release_computer_use_session(session_id: str) -> bool:
         backend, call_lock = _detach_locked(sid)
     with _approval_lock:
         _session_auto_approve.pop(sid, None), _always_allow.pop(sid, None)
+        _task_grants.discard(sid)
     if backend is None:
         return False
     _stop_backend(backend, call_lock,
@@ -207,7 +209,7 @@ def _shutdown_backend_atexit() -> None:
         _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
     with _approval_lock:
-        _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
+        _session_auto_approve.clear(), _always_allow.clear(), _task_grants.clear(), _escalation_warned.clear()
     for backend, call_lock in unique.values():
         _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
 
@@ -248,6 +250,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
     if (err := _reject_unsafe(action, args)) is not None:
         return err
+    if (err := _request_task_grant(args, session_id)) is not None:
+        return err
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
         ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
     for scope in scopes:
@@ -267,6 +271,47 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
+
+def _request_task_grant(args: Dict[str, Any], session_id: str) -> Optional[str]:
+    """Require explicit user permission before desktop discovery or control."""
+    with _approval_lock:
+        if session_id in _task_grants:
+            return None
+    callback = _approval_callback
+    if callback is not None:
+        try:
+            verdict = callback("task_grant", args, "allow computer_use for this task until session cleanup")
+        except Exception as exc:
+            logger.warning("computer_use task approval callback failed: %s", exc)
+            verdict = "deny"
+    else:
+        try:
+            from tools.approval import request_session_task_approval
+            verdict = request_session_task_approval(
+                command="computer_use task grant",
+                description=(
+                    "Allow Hermes to inspect and control the desktop for this one task? "
+                    "The grant ends on reset, cancel, or cleanup."
+                ),
+                pattern_key="computer_use:task_grant",
+            )
+        except Exception as exc:
+            logger.warning("computer_use task approval unavailable: %s", exc)
+            verdict = "deny"
+    if verdict in {"approve_once", "approve_session", "always_approve", "once", "session", "always"}:
+        with _approval_lock:
+            _task_grants.add(session_id)
+        return None
+    if verdict == "timeout":
+        return json.dumps({
+            "error": "computer_use task approval timed out — the user did not respond. Silence is not consent; do not retry without the user.",
+            "action": "task_grant",
+        })
+    return json.dumps({
+        "error": "computer_use requires explicit approval for this task",
+        "action": "task_grant",
+    })
+
 
 def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -> Optional[str]:
     """None if approved, else a JSON error string. Scoped by (action, delivery_mode) AND session_id: foreground

@@ -26,6 +26,7 @@ from agent.prompt_builder import (
 )
 from agent import prompt_builder as _pb
 from agent.runtime_cwd import resolve_context_cwd
+from agent.skill_utils import get_always_on_skill_names
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
@@ -618,6 +619,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _help_guidance_slot = len(stable_parts)
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
     stable_parts.extend(_guidance_parts(agent))
+    preset = getattr(agent, "_session_toolset_preset", None)
+    if preset:
+        stable_parts.append(f"[Session toolset preset: {preset}]")
+    always_on_skills = get_always_on_skill_names()
+    if always_on_skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        always_on_prompt, _loaded, missing = build_preloaded_skills_prompt(
+            always_on_skills,
+            task_id=getattr(agent, "session_id", None),
+            always_on=True,
+        )
+        if missing:
+            logger.warning("Configured always-on skills not found or disabled: %s", ", ".join(missing))
+        if always_on_prompt:
+            stable_parts.append(always_on_prompt)
     skills_prompt = _skills_prompt(agent)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
