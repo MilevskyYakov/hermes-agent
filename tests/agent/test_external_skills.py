@@ -101,6 +101,45 @@ class TestExternalSkillsInFindAll:
         assert matching[0]["description"] == "Local version"
 
 
+@pytest.mark.parametrize("support_dir", ["provenance", "adapters"])
+def test_support_docs_do_not_shadow_skills(hermes_home, external_skills_dir, monkeypatch, support_dir):
+    from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
+    from tools import skills_tool  # Register the real skill_view handler.
+    from tools.registry import registry
+
+    package = external_skills_dir / "my-external-skill"
+    support = package / support_dir / "example"
+    support.mkdir(parents=True)
+    (support / "my-external-skill.md").write_text("Support document.\n", encoding="utf-8")
+    (support / "SKILL.md").write_text("---\nname: embedded-instruction\n---\nSupport only.\n", encoding="utf-8")
+    category_skill = external_skills_dir / support_dir / "category-skill"
+    category_skill.mkdir(parents=True)
+    (category_skill / "SKILL.md").write_text("---\nname: category-skill\n---\nStandalone.\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(
+        json.dumps({"skills": {"external_dirs": [str(external_skills_dir)]}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.chdir(hermes_home)
+    clear_skills_system_prompt_cache(clear_snapshot=True)
+    try:
+        result = registry.dispatch("skill_view", {"name": "my-external-skill"})
+        assert isinstance(result, str)
+        loaded = json.loads(result)
+        assert loaded["success"], loaded
+        assert loaded["_source_path"] == str(package / "SKILL.md")
+        result = registry.dispatch("skill_view", {
+            "name": "my-external-skill", "file_path": f"{support_dir}/example/my-external-skill.md",
+        })
+        assert isinstance(result, str)
+        reference = json.loads(result)
+        assert reference["success"] and "Support document." in reference["content"]
+        prompt = build_skills_system_prompt()
+        assert "embedded-instruction" not in prompt
+        assert "- category-skill" in prompt
+    finally:
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+
 class TestExternalSkillView:
     def test_skill_view_finds_external(self, hermes_home, external_skills_dir):
         (hermes_home / "config.yaml").write_text(
@@ -115,3 +154,50 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+
+@pytest.mark.parametrize("source", ["local", "external", "project"])
+def test_activation_labels_survive_discovery_and_snapshot(hermes_home, tmp_path, monkeypatch, source):
+    from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
+
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    directory = {
+        "local": hermes_home / "skills",
+        "external": tmp_path / "external",
+        "project": project / ".hermes/skills",
+    }[source]
+    cases = {
+        "core": ({"auto": "core", "direct": True, "dependency": True}, "[core]"),
+        "manual": ({"auto": "none", "direct": True, "dependency": True}, "[manual]"),
+        "always": ({"auto": "none", "always": ["hermes"], "direct": True}, "[capability]"),
+        "helper": ({"auto": "none", "dependency": True}, "[capability]"),
+        "legacy": ({}, ""),
+    }
+    for name, (activation, _) in cases.items():
+        target = directory / name / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            "---\n" + json.dumps({"name": name, "description": f"Use {name}.",
+                                  "metadata": {"gerda": {"activation": activation}}})
+            + "\n---\nInstructions.\n", encoding="utf-8",
+        )
+    (hermes_home / "config.yaml").write_text(json.dumps({"skills": {
+        "external_dirs": [str(directory)] if source == "external" else [],
+        "trusted_project_dirs": [str(project)],
+    }}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.chdir(project)
+    clear_skills_system_prompt_cache(clear_snapshot=True)
+    try:
+        first = build_skills_system_prompt()
+        assert build_skills_system_prompt() == first
+        clear_skills_system_prompt_cache()
+        assert build_skills_system_prompt() == first
+        for name, (_, label) in cases.items():
+            line = next(line for line in first.splitlines() if line.strip().startswith(f"- {name}:"))
+            prefix = "[project] " if source == "project" else ""
+            expected = f"{prefix}{label} Use {name}." if label else f"{prefix}Use {name}."
+            assert line.strip() == f"- {name}: {expected}"
+    finally:
+        clear_skills_system_prompt_cache(clear_snapshot=True)
