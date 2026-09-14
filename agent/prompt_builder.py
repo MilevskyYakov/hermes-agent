@@ -1242,6 +1242,23 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
     return found
 
 
+def _skill_entry_description(entry: dict) -> str:
+    """Label the standalone role consistently for every skill source."""
+    desc = entry.get("description", "")
+    activation = entry.get("activation") or {}
+    if activation.get("auto") == "core":
+        return f"[core] {desc}".strip()
+    if activation.get("always"):
+        return f"[capability] {desc}".strip()
+    if activation.get("auto") == "none" and (
+        activation.get("direct") or activation.get("slash")
+    ):
+        return f"[manual] {desc}".strip()
+    if activation.get("dependency"):
+        return f"[capability] {desc}".strip()
+    return desc
+
+
 def _collect_extra_skills(
     root: Path, skill_files, hides, claimed: set[str], skills_by_category: dict[str, list[tuple[str, str]]],
     *, desc_prefix: str, log_fmt: str,
@@ -1255,7 +1272,7 @@ def _collect_extra_skills(
             if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
                 continue
             claimed.add(fm_name)
-            skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
+            skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{_skill_entry_description(entry)}".strip()))
         except Exception as e:
             logger.debug(log_fmt, skill_file, e)
 
@@ -1267,16 +1284,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
     for entry in visible_entries:
         name_owners.setdefault(_entry_name(entry), set()).add("org" if entry.get("org_id") else "personal")
     for entry in visible_entries:
-        fm, desc, org_id = _entry_name(entry), entry.get("description", ""), entry.get("org_id")
-        activation = entry.get("activation") or {}
-        if activation.get("auto") == "core":
-            desc = f"[core] {desc}".strip()
-        elif activation.get("always") or activation.get("dependency"):
-            desc = f"[capability] {desc}".strip()
-        elif activation.get("auto") == "none" and (
-            activation.get("direct") or activation.get("slash")
-        ):
-            desc = f"[manual] {desc}".strip()
+        fm, desc, org_id = _entry_name(entry), _skill_entry_description(entry), entry.get("org_id")
         if org_id:
             author = entry.get("org_author") or ""
             desc = f"[org-shared{': by ' + author if author else ''}] {desc}".strip()
@@ -1322,7 +1330,9 @@ def _render_skills_index(
         "for the current user turn and load it with skill_view(name). Exact slash/direct "
         "invocation of a [manual] skill wins and manual skills must never be auto-loaded. "
         "A [capability] may support the selected workflow without becoming a second core; "
-        "load it with skill_view(name, as_dependency=true). "
+        "load it with skill_view(name, as_dependency=true) only if it declares dependency activation. "
+        "Core/manual skills with dependency activation may also support the selected workflow this way, "
+        "without selecting another workflow. Always-on skills do not require dependency loading. "
         "Do not load the same skill twice in one session unless its result was explicitly "
         "marked [SKILL_PRUNED]. Skills contain specialized knowledge — API endpoints, tool-specific "
         "commands, and proven workflows that outperform general-purpose approaches. Load the skill "

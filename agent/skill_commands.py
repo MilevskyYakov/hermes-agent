@@ -275,7 +275,8 @@ def _build_skill_message(
     message = "\n".join(parts)
     if stable_prefix is not None and message.startswith(stable_prefix) and len(message) > len(stable_prefix):
         register_stable_prefix(stable_prefix)
-    return message
+    from tools.skills_tool_routing import register_skill_preload
+    return register_skill_preload(message, loaded_skill)
 
 
 def _render_skill_block(
@@ -528,7 +529,9 @@ def build_stacked_skill_invocation_message(
         return None
     typed = " ".join(keys)
     header = _scaffold_header(f'"{typed}" stacked skill bundle', loaded_names, missing=missing, user_instruction=user_instruction)
-    return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)
+    from tools.skills_tool_routing import register_skill_preload
+    message = register_skill_preload("\n\n".join([header, *skill_blocks]), blocks=skill_blocks)
+    return (message, loaded_names, missing)
 
 
 def _disabled_skill_names(platform: str | None = None) -> set:

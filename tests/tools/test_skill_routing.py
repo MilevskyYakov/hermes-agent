@@ -1,16 +1,17 @@
 """Routing/load invariants for portable skill activation metadata."""
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from tools.skills_tool import (
     _reset_skill_routing_state,
-    _skill_view_with_bump,
     reset_skill_view_dedup,
     skill_routing_context,
 )
+from tools.registry import registry
 
 
 def _make_skill(skills_dir, name, activation):
@@ -30,12 +31,12 @@ def _make_skill(skills_dir, name, activation):
     )
 
 
-def _call(name, *, as_dependency=False):
-    return json.loads(
-        _skill_view_with_bump(
-            {"name": name, "as_dependency": as_dependency}, task_id="task"
-        )
+def _call(name, *, as_dependency=False, **kwargs):
+    result = registry.dispatch(
+        "skill_view", {"name": name, "as_dependency": as_dependency, **kwargs}, task_id="task"
     )
+    assert isinstance(result, str)
+    return json.loads(result)
 
 
 @pytest.fixture(autouse=True)
@@ -191,6 +192,7 @@ def test_dependency_does_not_consume_second_core_slot(tmp_path):
         )
         assert _call("hub")["routing_outcome"] == "core_selected"
         assert _call("helper", as_dependency=True)["routing_outcome"] == "dependency_loaded"
+        assert _call("helper")["routing_outcome"] == "dependency_flag_required"
         assert _call("dev")["routing_outcome"] == "second_core_blocked"
 
 
@@ -259,3 +261,157 @@ def test_pruned_skill_reloads_once_per_new_marker(tmp_path):
     assert reloaded["routing_outcome"] == "pruned_reloaded"
     assert reloaded["prompt_payload_included"] is True
     assert cached["load_state"] == "cached"
+
+
+@pytest.mark.parametrize("support_auto", ["core", "none"])
+@pytest.mark.parametrize("owner_auto", ["core", "none"])
+@pytest.mark.parametrize("preload", [False, True])
+def test_dependency_keeps_owner_and_intrinsic_role(tmp_path, support_auto, owner_auto, preload):
+    """Real external-directory discovery and dispatch, including warm session routing."""
+    from hermes_constants import get_hermes_home
+
+    external = tmp_path / "external"
+    for name, auto in (("owner", owner_auto), ("support", support_auto)):
+        _make_skill(external, name, {"auto": auto, "direct": True, "dependency": True})
+    (get_hermes_home() / "config.yaml").write_text(
+        json.dumps({"skills": {"external_dirs": [str(external)]}}), encoding="utf-8"
+    )
+
+    if preload:
+        with skill_routing_context([{"role": "user", "content": "/support"}], "roles", "preload"):
+            assert _call("support")["success"]
+
+    with skill_routing_context([{"role": "user", "content": "A task"}], "roles", "no-owner"):
+        assert _call("support", as_dependency=True)["routing_outcome"] == "dependency_context_required"
+
+    with (
+        patch("agent.session_toolsets.select_core_preset") as select_preset,
+        skill_routing_context([{"role": "user", "content": "/owner"}], "roles", "work", agent=object()),
+    ):
+        assert _call("owner")["success"]
+        select_preset.reset_mock()
+        assert not _call("support")["success"]
+        dependency = _call("support", as_dependency=True)
+        assert dependency["success"], dependency
+        assert dependency["load_state"] == ("cached" if preload else "loaded")
+        assert dependency["prompt_payload_included"] is not preload
+        if not preload:
+            assert Path(dependency["_source_path"]) == external / "support/SKILL.md"
+        select_preset.assert_not_called()
+        assert not _call("support")["success"]
+        assert _call("owner")["load_state"] == "cached"
+        select_preset.assert_not_called()
+
+    with skill_routing_context([{"role": "user", "content": "/support"}], "roles", "standalone"):
+        assert _call("support")["load_state"] == "cached"
+        assert not _call("owner")["success"]
+        assert _call("owner", as_dependency=True)["success"]
+
+    with skill_routing_context([{"role": "user", "content": "A task"}], "roles", "no-owner-again"):
+        assert _call("support", as_dependency=True)["routing_outcome"] == "dependency_context_required"
+        if support_auto == "none":
+            assert _call("support")["routing_outcome"] == "manual_trigger_required"
+
+
+@pytest.mark.parametrize("activation", [
+    {"auto": "core", "direct": True},
+    {"auto": "none", "direct": True},
+    {"auto": "none", "always": ["hermes"], "direct": True},
+])
+def test_dependency_flag_never_grants_undeclared_permission(tmp_path, activation):
+    _make_skill(tmp_path, "owner", {"auto": "core", "direct": True})
+    _make_skill(tmp_path, "support", activation)
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        for turn in ("cold", "warm"):
+            with skill_routing_context([{"role": "user", "content": "/owner"}], "permission", turn):
+                assert _call("owner")["success"]
+                denied = _call("support", as_dependency=True)
+                assert denied["routing_outcome"] == "dependency_not_allowed"
+                assert not denied["prompt_payload_included"]
+            with skill_routing_context([{"role": "user", "content": "/support"}], "permission", turn + "-direct"):
+                assert _call("support")["success"]
+
+
+def test_categorized_cache_hit_selects_current_workflow(tmp_path):
+    _make_skill(tmp_path / "category", "owner", {"auto": "core", "direct": True})
+    _make_skill(tmp_path, "helper", {"auto": "none", "dependency": True})
+    _make_skill(tmp_path, "other", {"auto": "core", "direct": True})
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with skill_routing_context([{"role": "user", "content": "Task"}], "alias", "first"):
+            assert _call("owner")["success"]
+        with skill_routing_context([{"role": "user", "content": "Task"}], "alias", "second"):
+            assert _call("category/owner")["load_state"] == "cached"
+            assert _call("helper", as_dependency=True)["success"]
+            assert _call("other")["routing_outcome"] == "second_core_blocked"
+
+
+def test_changed_activation_is_not_authorized_from_cache(tmp_path):
+    _make_skill(tmp_path, "owner", {"auto": "core", "direct": True})
+    _make_skill(tmp_path, "helper", {"auto": "none", "direct": True, "dependency": True})
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), skill_routing_context(
+        [{"role": "user", "content": "Task"}], "freshness", "turn"
+    ):
+        assert _call("owner")["success"]
+        assert _call("helper", as_dependency=True)["success"]
+        target = tmp_path / "helper/SKILL.md"
+        target.write_text(target.read_text(encoding="utf-8").replace("dependency: true", "dependency: false"), encoding="utf-8")
+        assert _call("helper", as_dependency=True)["routing_outcome"] == "dependency_not_allowed"
+
+
+@pytest.mark.parametrize("file_path", ["SKILL.md", "./SKILL.md", "root-link.md"])
+def test_root_file_routes_like_normal_skill(tmp_path, file_path):
+    _make_skill(tmp_path, "manual", {"auto": "none", "direct": True})
+    (tmp_path / "manual/root-link.md").symlink_to("SKILL.md")
+    (tmp_path / "manual/reference.md").write_text("Supporting knowledge.", encoding="utf-8")
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with skill_routing_context([{"role": "user", "content": "Task"}], "root-file", "cold"):
+            assert _call("manual", file_path=file_path)["routing_outcome"] == "manual_trigger_required"
+            assert _call("manual", file_path="reference.md")["success"]
+        with skill_routing_context([{"role": "user", "content": "/manual"}], "root-file", "direct"):
+            assert _call("manual", file_path=file_path)["routing_outcome"] == "manual_selected"
+            assert _call("manual")["load_state"] == "cached"
+        with skill_routing_context([{"role": "user", "content": "Task"}], "root-file", "warm"):
+            assert _call("manual", file_path=file_path)["routing_outcome"] == "manual_trigger_required"
+
+
+@pytest.mark.parametrize("surface", ["single", "stacked", "bundle", "tui"])
+def test_slash_preload_owns_turn_without_duplicate_content(tmp_path, monkeypatch, surface):
+    from hermes_constants import get_hermes_home
+    from agent.skill_commands import build_skill_invocation_message
+
+    _make_skill(tmp_path, "owner", {"auto": "none", "direct": True})
+    _make_skill(tmp_path, "helper", {"auto": "core", "direct": True, "dependency": True})
+    _make_skill(tmp_path, "style", {"auto": "none", "always": ["hermes"]})
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"skills": {"external_dirs": [str(tmp_path)]}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    if surface == "stacked":
+        from agent.skill_commands import build_stacked_skill_invocation_message
+        built = build_stacked_skill_invocation_message(["/style", "/owner"], "Use helper", task_id="task")
+        assert built is not None
+        message, _, _ = built
+    elif surface == "bundle":
+        from agent.skill_bundles import build_bundle_invocation_message
+        bundles = get_hermes_home() / "skill-bundles"
+        bundles.mkdir()
+        (bundles / "workflow.yaml").write_text(json.dumps({"name": "workflow", "skills": ["style", "owner"]}), encoding="utf-8")
+        built = build_bundle_invocation_message("/workflow", "Use helper", task_id="task")
+        assert built is not None
+        message, _, _ = built
+    elif surface == "tui":
+        from tui_gateway import server
+        response = getattr(server, "_dispatch_skill")(1, {}, {"session_key": "task"}, "owner", "Use helper")
+        assert response is not None
+        message = response["result"]["message"]
+    else:
+        message = build_skill_invocation_message("/owner", "Use helper", task_id="task")
+    assert message and "owner instructions" in message
+    with skill_routing_context([{"role": "user", "content": message}], "slash", "turn"):
+        assert _call("helper", as_dependency=True)["success"]
+        owner = _call("owner")
+        assert owner["load_state"] == "cached" and not owner["prompt_payload_included"]
+        assert not _call("helper")["success"]
+    with skill_routing_context([{"role": "user", "content": "Unrelated task"}], "slash", "next"):
+        assert _call("helper", as_dependency=True)["routing_outcome"] == "dependency_context_required"
+    quoted = '[IMPORTANT: The user has invoked the "owner" skill.]'
+    with skill_routing_context([{"role": "user", "content": quoted}], "slash", "quoted"):
+        assert _call("helper", as_dependency=True)["routing_outcome"] == "dependency_context_required"

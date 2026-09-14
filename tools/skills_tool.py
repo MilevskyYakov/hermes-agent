@@ -27,8 +27,8 @@ from tools.skills_tool_plugin import (  # noqa: F401
 from tools.skills_tool_dedup import (  # noqa: F401
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
 from tools.skills_tool_routing import (  # noqa: F401
-    _reset_skill_routing_state, _skill_route_finish, _skill_route_precheck,
-    _skill_route_pruned_reload_pending, skill_routing_context)
+    _SKILL_ROUTE_CONTEXT, _reset_skill_routing_state, _skill_route_finish, _skill_route_precheck,
+    skill_routing_context)
 
 logger = logging.getLogger(__name__)
 
@@ -520,7 +520,7 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
+    name: str, file_path: Optional[str] = None, task_id: Optional[str] = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
@@ -648,16 +648,21 @@ def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, enforce routing, then record successful full loads."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    force_pruned_reload = _skill_route_pruned_reload_pending(name, args.get("file_path"))
-    cached = _skill_route_precheck(name, args.get("file_path"))
+    routing = _SKILL_ROUTE_CONTEXT.get() is not None
+
+    cached = _skill_route_precheck(
+        name, args.get("file_path"), as_dependency=args.get("as_dependency") is True
+    )
     if cached is not None:
         return cached
-    stub = None if force_pruned_reload else _check_skill_view_dedup(
+    stub = None if routing else _check_skill_view_dedup(
         task_id, name, args.get("file_path")
     )
     if stub is not None:
         return stub
-    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    # Resolve current identity and metadata before routing or returning a cached body.
+    # Preprocessing can execute commands: only run it for an allowed, uncached root.
+    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id, preprocess=not routing)
     result = _skill_route_finish(
         name,
         result,
@@ -666,6 +671,17 @@ def _skill_view_with_bump(args, **kw):
     )
     with suppress(Exception):
         parsed = json.loads(result)
+        if routing and parsed.get("success"):
+            if parsed.get("prompt_payload_included") and not args.get("file_path"):
+                parsed["content"] = _preprocess_skill(
+                    parsed["content"], Path(parsed["_source_path"]).parent, task_id,
+                    "Could not preprocess skill %s", name,
+                )
+                result = _json(parsed)
+            elif args.get("file_path") and not parsed.get("load_state"):
+                stub = _check_skill_view_dedup(task_id, name, args["file_path"])
+                if stub is not None:
+                    return stub
         if (
             isinstance(parsed, dict)
             and parsed.get("success")

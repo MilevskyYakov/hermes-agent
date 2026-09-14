@@ -157,7 +157,9 @@ def build_bundle_invocation_message(
         f'"{bundle_name}" skill bundle', loaded_names, lead_lines=[f"Bundle: {bundle_name}"], missing=missing,
         disabled=disabled, extra_instruction=info.get("instruction") or "", user_instruction=user_instruction,
     )
-    return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)
+    from tools.skills_tool_routing import register_skill_preload
+    message = register_skill_preload("\n\n".join([header, *skill_blocks]), blocks=skill_blocks)
+    return (message, loaded_names, missing)
 
 
 # File-level CRUD — used by `hermes bundles`.
