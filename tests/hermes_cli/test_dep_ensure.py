@@ -56,14 +56,8 @@ def test_has_npx_agent_browser_false_when_nothing_resolves():
         assert _has_npx_agent_browser() is False
 
 
-def test_find_agent_browser_lazy_install_cycle_terminates(monkeypatch):
-    """tools.browser_tool_install._find_agent_browser's "nothing found" branch calls
-    ensure_dependency("browser"), whose "browser" check now includes
-    _has_npx_agent_browser() -> _find_agent_browser(validate=False) again.
-    That nested call must NOT be able to trigger another ensure_dependency
-    call (only validate=True does that) — verifying the cycle is bounded to
-    one extra rescan, not unbounded recursion, using the real functions on
-    both sides rather than mocking the cycle away."""
+def test_find_agent_browser_does_not_enter_dependency_setup(monkeypatch):
+    """Missing execution dependencies fail without recursive setup or a rescan."""
     import shutil
     import tools.browser_tool as bt
     from hermes_cli import dep_ensure
@@ -88,12 +82,7 @@ def test_find_agent_browser_lazy_install_cycle_terminates(monkeypatch):
     with pytest.raises(FileNotFoundError):
         bt_install._find_agent_browser(validate=True)
 
-    # One outer validate=True call, plus exactly one bounded nested
-    # validate=False rescan from _has_npx_agent_browser inside
-    # ensure_dependency's "browser" check — not unbounded recursion, and not
-    # a second ensure_dependency("browser") call (which would show up as a
-    # second `True` in this list).
-    assert validate_calls == [True, False]
+    assert validate_calls == [True]
 
 
 @pytest.mark.windows_only

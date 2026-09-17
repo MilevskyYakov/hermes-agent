@@ -102,3 +102,16 @@ def test_build_metadata_callback_is_merged_per_op():
             "metadata": {"session_id": "s1", "tool_name": "memory"},
         }
     ]
+
+
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("content,expected", [(None, "alias fact"), ("", ""), ("explicit fact", "explicit fact")])
+def test_new_text_alias_survives_external_bridge(batched, content, expected):
+    mgr, provider = _manager_with_provider()
+    operation = {"action": "replace", "old_text": "old fact", "new_text": "alias fact"}
+    if content is not None:
+        operation["content"] = content
+    args = {"operations": [operation]} if batched else operation
+    mgr.notify_memory_tool_write(json.dumps({"success": True}), args)
+    assert provider.calls[0]["content"] == expected
+    assert provider.calls[0]["metadata"]["old_text"] == "old fact"

@@ -45,12 +45,14 @@ def _hermes_ensure_own_tab():
         # re-attaches to the first shared page) re-pins automatically,
         # while agent-driven tab switches mid-session are left alone.
         from browser_harness import _ipc as _bipc
-        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
-    except Exception:
-        _dpid = "0"
+        _dpid = _bipc.pid_path(_name).read_text().strip()
+        if not _dpid.isdecimal() or int(_dpid) <= 0:
+            raise ValueError("missing daemon pid")
+    except Exception as _error:
+        raise RuntimeError("Cannot establish browser session ownership; payload not executed") from _error
     _uid = _os.getuid() if hasattr(_os, "getuid") else 0
     _marker = _os.path.join(
-        _tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid)
+        _tf.gettempdir(), "hermes-bu-owntab-v2-%s-%s-%s" % (_uid, _name, _dpid)
     )
     if _os.path.exists(_marker):
         return
@@ -58,10 +60,11 @@ def _hermes_ensure_own_tab():
         # Force a fresh target: new_tab() would REUSE a blank current tab,
         # which is exactly the tab a sibling daemon may also hold.
         _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
-        if _tid:
-            switch_tab(_tid)
-    except Exception:
-        pass  # best-effort: worst case is pre-fix behavior
+        if not _tid:
+            raise RuntimeError("browser returned no new target")
+        switch_tab(_tid)
+    except Exception as _error:
+        raise RuntimeError("Cannot select an owned browser tab; payload not executed") from _error
     try:
         open(_marker, "w").close()
     except OSError:
@@ -202,7 +205,7 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 
 def is_browser_use_cli_mode() -> bool:
     """True when the Browser Use CLI replaces the built-in browser stack. Browser Use mode is the DEFAULT:
-    unset ``browser.backend`` ("") enables it whenever the CLI is runnable (installed binary or uvx);
+    unset ``browser.backend`` ("") enables it whenever the CLI is installed;
     ``browser.backend: off`` keeps the built-in browser_* tools. Camofox always falls back to the built-in
     tools (Firefox, custom HTTP API, no CDP surface for the harness)."""
     if _camofox_active():
@@ -240,18 +243,17 @@ def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run. MANAGED-FIRST: Hermes' own ``$HERMES_HOME/bin``
     copy always wins so every session drives one Hermes-controlled binary; PATH and the user-level tool dir
     (~/.local/bin, or uv's %APPDATA%/uv/bin on Windows — Desktop/TUI workers may start with a minimal PATH
-    that omits it) are fallbacks; uvx zero-install (same probe order) is last."""
+    that omits it) are fallbacks. Discovery never downloads dependencies via uvx."""
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         user_bin = str(Path(appdata) / "uv" / "bin") if appdata else None
     else:
         user_bin = str(Path(os.path.expanduser("~")) / ".local" / "bin")
     probe_paths = [p for p in (_managed_bin_dir(), None, user_bin) if p is None or p]  # None = PATH
-    for name, argv in (("browser-use", lambda b: [b]), ("uvx", lambda b: [b, "browser-use"])):
-        for probe_path in probe_paths:
-            found = shutil.which(name, path=probe_path)
-            if found:
-                return argv(found)
+    for probe_path in probe_paths:
+        found = shutil.which("browser-use", path=probe_path)
+        if found:
+            return [found]
     return None
 
 
@@ -377,7 +379,7 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
     Chrome on its default profile, which needs the chrome://inspect toggle + an Allow popup per run and
     is blocked outright on Chrome >=136; on a headless box it just reports ``chrome-not-running``.
     ``get cdp-url`` runs through ``_run_browser_command`` (legacy cache, inactivity reaper, atexit, Chromium
-    preflight/auto-install) on EVERY call: it launches the browser cold, follows a relaunch, and refreshes
+    installed-dependency preflight) on EVERY call: it launches the browser cold, follows a relaunch, and refreshes
     the agent-browser daemon's idle timer, which never sees the harness's direct CDP traffic."""
     try:
         from tools.browser_tool_session import _run_browser_command
@@ -529,9 +531,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     cmd = _find_cli()
     if not cmd:
-        return tool_error("browser-use CLI not found on PATH, and uvx is unavailable for a zero-install run. "
-                          "Install it with `uv tool install browser-use` (or `pipx install browser-use`), "
-                          "then run `browser-use --doctor` to verify the setup.")
+        return tool_error("browser-use CLI not found. Browser execution will not bootstrap dependencies. "
+                          "After explicit setup approval, use `hermes tools` → Browser Automation → Browser Use "
+                          "or `uv tool install browser-use`.")
 
     env = _base_subprocess_env()
     if session:
@@ -596,6 +598,9 @@ _HEADER_BASE = (
     "with pre-imported browser helpers; stdout comes back in the result. Start `code` with a one-line "
     "comment describing the step for the user in plain language, max 60 chars "
     "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the step label.\n\n"
+    "PREREQUISITES: dependencies must already be installed; a missing dependency is a setup blocker, not permission to install. "
+    "Confirm the selected backend and permission for personal-profile or paid/cloud access before acting. "
+    "A named session owns a tab on shared CDP, not an isolated browser profile; cookies/accounts remain shared.\n\n"
     "STATE: the browser session and workspace persist across calls; Python variables do NOT (fresh "
     "interpreter each call). The workspace dir is $BH_AGENT_WORKSPACE (also `workspace` in every result); "
     "functions defined in agent_helpers.py there are auto-imported into every call. For multi-item tasks "
@@ -674,14 +679,14 @@ def _dynamic_schema_overrides() -> dict:
 
 BROWSER_EXEC_SCHEMA = {
     "name": "browser_exec",
-    # Static fallback description, used only when the CLI (and uvx) is unavailable
+    # Static fallback description, used only when the CLI is unavailable
     "description": (_HEADER_BASE + _HELPERS_DIGEST
-                    + "\n\n(The browser-use CLI is not installed yet. Install it with `uv tool install browser-use`.)"),
+                    + "\n\n(The browser-use CLI is not installed yet. After explicit setup approval, use `uv tool install browser-use`.)"),
     "parameters": {
         "type": "object",
         "properties": {
             "code": {"type": "string", "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back."},
-            "session": {"type": "string", "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session."},
+            "session": {"type": "string", "description": "Named daemon/session. Managed local and provider sessions use their own browser; shared CDP gets an owned tab, NOT profile/cookie isolation. Reuse the same name on every related call; omit for the shared default session."},
             "timeout_s": {"type": "integer", "default": _DEFAULT_TIMEOUT_S,
                           "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S})."},
         },

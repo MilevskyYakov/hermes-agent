@@ -260,12 +260,12 @@ class TestFindCli:
         )
         assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/browser-use"]
 
-    def test_falls_back_to_uvx(self, monkeypatch):
+    def test_uvx_does_not_satisfy_installed_dependency(self, monkeypatch):
         monkeypatch.setattr(
             bu_cli.shutil, "which",
             lambda name, path=None: "/usr/local/bin/uvx" if name == "uvx" and path is None else None,
         )
-        assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/uvx", "browser-use"]
+        assert bu_cli._find_cli_unpatched() is None
 
     def test_none_when_neither_available(self, monkeypatch):
         monkeypatch.setattr(bu_cli.shutil, "which", lambda name, path=None: None)
@@ -944,13 +944,13 @@ class TestFindCliManagedBin:
         bu.chmod(bu.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(bu)]
 
-    def test_managed_bin_uvx_fallback(self, tmp_path, monkeypatch):
+    def test_managed_bin_uvx_is_not_an_installed_browser(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         uvx = bin_dir / "uvx"
         uvx.write_text("#!/bin/sh\n")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
+        assert bu_cli._find_cli_unpatched() is None
 
     def test_nothing_found(self, tmp_path, monkeypatch):
         assert bu_cli._find_cli_unpatched() is None
@@ -998,13 +998,13 @@ class TestFindCliManagedBin:
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
-    def test_user_local_bin_uvx_fallback(self, tmp_path, monkeypatch):
+    def test_user_local_bin_uvx_is_not_an_installed_browser(self, tmp_path, monkeypatch):
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         uvx = cli_dir / "uvx"
         uvx.write_text("#!/bin/sh\n")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
+        assert bu_cli._find_cli_unpatched() is None
 
 
 class TestInstallCli:
