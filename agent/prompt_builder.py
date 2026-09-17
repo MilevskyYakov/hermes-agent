@@ -183,8 +183,10 @@ def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = T
     return frame + (
         "Skills come first: when you learn something while doing a task — a "
         "procedure, a pitfall, and the user's preferences and corrections "
-        "for that kind of work — record it in the skill you used or built "
-        "for the task (skill_manage), where it loads only when relevant. "
+        "for that kind of work — propose saving it in the relevant skill, "
+        "where it loads only when relevant. Creating or changing skills requires "
+        "the user's explicit permission for that package; existing permission "
+        "covers ordinary in-scope updates without repeated approval. "
         "Memory is the narrow exception for facts that apply to EVERY "
         "session regardless of task (who the user is, environment facts, "
         "standing conventions with no task home); it has a hard character "
@@ -223,7 +225,9 @@ SESSION_SEARCH_GUIDANCE = (
 # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
 # the compaction-pruning contract lives here — nothing else teaches it.
 SKILLS_GUIDANCE = (
-    "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
+    "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n"
+    "Creating or changing a skill requires explicit permission for that package; "
+    "without it, only propose the change.\n\n"
     "## Skill Safety Rule\n"
     "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
     "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
@@ -1340,9 +1344,10 @@ def _render_skills_index(
         "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
         "code review, planning, and testing — load them even for tasks you already know how to do, because "
         "the skill defines how it should be done here.\n"
-        "If a skill has issues, fix it with skill_manage(action='patch').\n"
-        "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
-        "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
+        "If a skill has issues or a reusable lesson is missing, propose a bounded correction. "
+        "Creating or changing skills requires explicit permission for the relevant package; "
+        "a discovered defect, acknowledgement or task completion is not that permission. "
+        "Within an already authorized package, apply and verify the correction before finishing.\n"
         "\n"
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"

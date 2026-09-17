@@ -107,7 +107,7 @@ def _agent_browser_candidates(extended_path: str):
 
 
 def _find_agent_browser(*, validate: bool = True) -> str:
-    """Find the agent-browser CLI: PATH, Homebrew/managed dirs, local node_modules/.bin, npx fallback, lazy install.
+    """Find an installed agent-browser CLI: PATH, Homebrew/managed dirs, local node_modules/.bin.
 
     A bare ``shutil.which`` hit is NOT trusted: agent-browser's npm postinstall re-points a global symlink at our
     local node_modules binary, which vanishes on the next ``hermes update`` and leaves a dangling link ``which``
@@ -118,8 +118,8 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     _bt = _origin()
 
     def _not_found(cached: bool) -> FileNotFoundError:
-        return FileNotFoundError(f"agent-browser CLI not found{' (cached)' if cached else ''}. Install it with: "
-                                 f"{_browser_install_hint()}\nOr ensure npx is available in your PATH.")
+        return FileNotFoundError(f"agent-browser CLI not found{' (cached)' if cached else ''}. "
+                                 f"After explicit setup approval, install it with: {_browser_install_hint()}.")
 
     def _accept(candidate: str) -> str:
         # Set resolved at each accept site (not before the search) so a concurrent reader never sees
@@ -138,23 +138,9 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     for candidate in _agent_browser_candidates(extended_path):
         if candidate and ok(candidate):
             return _accept(candidate)
-    # npx fallback (also searches the extended PATH)
-    if _resolve_npx_bin():
-        return _accept(_bt.NPX_AGENT_BROWSER_SENTINEL)
-    if not validate:
-        raise FileNotFoundError("agent-browser CLI not found")
-    try:  # Nothing found — try lazy installation before giving up.
-        from hermes_cli.dep_ensure import ensure_dependency
-        if ensure_dependency("browser"):
-            home = get_hermes_home()
-            managed = (home / "node_modules" / ".bin", home / "node" / "bin", home / "node")
-            for path in (None, *([extended_path] if extended_path else []), *map(str, managed)):
-                recheck = shutil.which("agent-browser", path=path)
-                if recheck and agent_browser_runnable(recheck):
-                    return _accept(recheck)
-    except Exception:
-        pass
-    _bt._agent_browser_resolved = True
+    # Discovery/execution is not dependency setup: no npx download or lazy install.
+    if validate:
+        _bt._agent_browser_resolved = True
     raise _not_found(cached=False)
 
 

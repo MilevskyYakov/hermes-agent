@@ -197,9 +197,8 @@ class TestFindAgentBrowser:
 
         assert result == str(fake_binary)
 
-    def test_npx_fallback_validate_false(self):
-        """The npx sentinel must resolve through the validate=False path too,
-        independent of the fully-mocked coverage in test_nous_subscription.py."""
+    def test_npx_does_not_satisfy_installed_dependency(self):
+        """Discovery must not treat a package downloader as an installed CLI."""
         def mock_which(cmd, path=None):
             if cmd == "agent-browser":
                 return None
@@ -222,9 +221,8 @@ class TestFindAgentBrowser:
                  "tools.browser_tool_install._discover_homebrew_node_dirs",
                  return_value=[],
              ):
-            result = _find_agent_browser(validate=False)
-
-        assert result == "npx agent-browser"
+            with pytest.raises(FileNotFoundError):
+                _find_agent_browser(validate=False)
 
 
 class TestAgentBrowserCandidatePresent:
