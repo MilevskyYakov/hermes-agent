@@ -391,16 +391,19 @@ def _compute_docstring_lines(lines: list) -> set:
     return doc_lines
 
 
-def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
+def scan_file(file_path: Path, rel_path: str = "", *, content: str | None = None) -> List[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
-    name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
+    name). Optional *content* supplies an already-read snapshot for caller-side classification.
+    Regex findings dedupe per pattern per line; invisible chars yield one per line."""
     rel_path = rel_path or file_path.name
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
-    try:
-        lines = file_path.read_text(encoding='utf-8').split('\n')
-    except (UnicodeDecodeError, OSError):
-        return []
+    if content is None:
+        try:
+            content = file_path.read_text(encoding='utf-8')
+        except (UnicodeDecodeError, OSError):
+            return []
+    lines = content.split('\n')
     findings = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
