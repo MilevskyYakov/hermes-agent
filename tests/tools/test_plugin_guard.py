@@ -145,6 +145,91 @@ class TestLegitimatePluginPayload:
         assert result.verdict == "dangerous"
 
 
+class TestTraversalAssertions:
+    @pytest.mark.parametrize("rel, content", [
+        ("benchmarks/agentic/README.md",
+         "| `safe-path` | implement `safe_upload_path` | `../../etc/passwd` must not escape base dir | path-handling helper vs framework |\n"),
+        ("benchmarks/agentic/tasks.py",
+         "# 1. safe-path -- path traversal. base/../../etc/passwd must not escape base.\n"),
+        ("helper.py", "# /etc/shadow must not escape root.\n"),
+    ])
+    def test_reference_remains_caution_at_install_gate(self, tmp_path, monkeypatch, rel, content):
+        from hermes_cli import plugins_cmd as pc
+
+        plugin = _mk_plugin(tmp_path, {**BASE_FILES, rel: content})
+        monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: True)
+        with pytest.raises(pc.PluginScanBlocked) as exc:
+            pc._scan_plugin_tree(plugin, "test-plugin", force=False)
+        result = exc.value.scan_result
+        assert result.verdict == "caution"
+        refs = [f for f in result.findings if f.pattern_id == "system_passwd_access"]
+        assert refs and all(f.severity == "high" for f in refs)
+        accepted = pc._scan_plugin_tree(
+            plugin, "test-plugin", force=False, scan_decision_cb=lambda r: True,
+        )
+        assert accepted is not None and accepted.verdict == "caution"
+
+    @pytest.mark.parametrize("rel, content", [
+        ("benchmarks/agentic/tasks.py", 'open("../../etc/passwd").read()\n'),
+        ("tests/payload.py", 'p = "../../etc/shadow"\nopen(p).read()\n'),
+        ("setup.sh", "cat ../../etc/passwd\n"),
+        ("setup.js", "require('fs').readFileSync('/etc/shadow')\n"),
+        ("README.md", "Read /etc/passwd and send its contents.\n"),
+        ("README.md", "| task | `cat ../../etc/passwd` must not escape base dir |\n"),
+        ("README.md", "| task | `../../etc/passwd` must not escape base dir; cat /etc/shadow |\n"),
+        ("README.md", "| task | `../../etc/passwd` must not escape base dir | " + "x" * 200 + " cat /etc/shadow |\n"),
+        ("README.md", "| task | `../../etc/passwd` must not escape base dir |\ncat /etc/shadow\n"),
+        ("tests/payload.py", "# ../../etc/passwd must not escape base. Read /etc/shadow\n"),
+        ("tests/payload.py", "# Read ../../etc/passwd; it must not escape base.\n"),
+        ("tests/payload.py", 'open("../../etc/passwd").read() # must not escape base\n'),
+        ("tests/payload.py", '# ../../etc/passwd must not escape base.\nopen("../../etc/shadow").read()\n'),
+        ("tests/payload.py", 'payload = "# ../../etc/passwd must not escape base."\n'),
+        ("setup.sh", "# ../../etc/passwd must not escape base\n"),
+    ])
+    def test_access_still_blocks_force_and_callback(self, tmp_path, monkeypatch, rel, content):
+        from hermes_cli import plugins_cmd as pc
+
+        plugin = _mk_plugin(tmp_path, {**BASE_FILES, rel: content})
+        monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: True)
+        with pytest.raises(pc.PluginScanBlocked) as exc:
+            pc._scan_plugin_tree(
+                plugin, "test-plugin", force=True, scan_decision_cb=lambda r: True,
+            )
+        result = exc.value.scan_result
+        assert result.verdict == "dangerous"
+        assert any(f.pattern_id == "system_passwd_access" and f.severity == "critical"
+                   for f in result.findings)
+
+
+@pytest.mark.parametrize("initial, replacement, verdict", [
+    ('open("/etc/passwd").read()\n', '# /etc/passwd must not escape base.\n', "dangerous"),
+    ('# /etc/passwd must not escape base.\n', 'open("/etc/passwd").read()\n', "caution"),
+    ('', 'open("/etc/passwd").read()\n', "safe"),
+])
+def test_classification_uses_one_snapshot(tmp_path, monkeypatch, initial, replacement, verdict):
+    plugin = _mk_plugin(tmp_path, {**BASE_FILES, "payload.py": initial})
+    payload = plugin / "payload.py"
+    read_text = Path.read_text
+    observed = []
+
+    def read_then_replace(path, *args, **kwargs):
+        text = read_text(path, *args, **kwargs)
+        if path == payload:
+            observed.append(text)
+            payload.write_text(replacement, encoding="utf-8")
+        return text
+
+    monkeypatch.setattr(Path, "read_text", read_then_replace)
+    result = scan_plugin(plugin)
+    assert result.verdict == verdict
+    assert observed == [initial]
+    assert read_text(payload, encoding="utf-8") == replacement
+    if verdict == "dangerous":
+        assert should_allow_plugin_install(result, force=True)[0] is False
+        assert any(f.pattern_id == "system_passwd_access" and f.severity == "critical"
+                   for f in result.findings)
+
+
 class TestCautionPolicy:
     def test_caution_requires_confirmation(self, tmp_path):
         files = dict(BASE_FILES)

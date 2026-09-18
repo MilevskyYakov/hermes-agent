@@ -10,15 +10,17 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 from tools.skills_guard import (
-    Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
+    Finding, ScanResult, SCANNABLE_EXTENSIONS, SUSPICIOUS_BINARY_EXTENSIONS,
+    _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v2"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -66,14 +68,42 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
     return Finding(pattern_id, severity, category, file, 0, match, description)
 
 
-def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
+_CONTAINMENT_ASSERTION = re.compile(
+    r"(?P<quote>`?)[\w./-]*/etc/(?:passwd|shadow)(?P=quote)\s+"
+    r"must not escape [\w-]+(?: dir(?:ectory)?)?\.?", re.IGNORECASE)
+
+
+def _is_containment_reference(line: str, suffix: str) -> bool:
+    """Only complete path-containment assertions in Python comments / Markdown table cells.
+
+    Keep these at caution, not safe: prose is not proof. Never exempt a test directory,
+    executable expression, or a second password-file reference elsewhere on the line.
+    """
+    text = line.strip()
+    if suffix == ".py" and text.startswith("#"):
+        parts = text[1:].strip().split(". ")
+    elif suffix == ".md" and text.startswith("|") and text.endswith("|"):
+        parts = text[1:-1].split("|")
+    else:
+        return False
+    remaining = [part for part in parts if not _CONTAINMENT_ASSERTION.fullmatch(part.strip())]
+    return len(remaining) < len(parts) and not re.search(
+        r"/etc/passwd|/etc/shadow", " ".join(remaining), re.IGNORECASE)
+
+
+def _filter_findings(findings: List[Finding], rel_path: str, lines: List[str]) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
+
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
         f.severity = SEVERITY_REMAP.get(f.pattern_id) or f.severity
+        if (f.pattern_id == "system_passwd_access" and 0 < f.line <= len(lines)
+                and _is_containment_reference(lines[f.line - 1], Path(rel_path).suffix.lower())):
+            f.severity = "high"
+            f.description = "documents a path-containment assertion (verify intent)"
         out.append(f)
     return out
 
@@ -127,8 +157,14 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
     if plugin_dir.is_dir():
         all_findings.extend(_check_plugin_structure(plugin_dir))
         for f, rel in sorted(_walk(plugin_dir)):
-            if f.is_file() and not f.is_symlink():
-                all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel))
+            if f.is_file() and not f.is_symlink() and f.suffix.lower() in SCANNABLE_EXTENSIONS:
+                try:
+                    content = f.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                # Use one snapshot, not a second read or the truncated Finding.match.
+                findings = scan_file(f, rel_path=rel, content=content)
+                all_findings.extend(_filter_findings(findings, rel, content.split("\n")))
     verdict = _determine_verdict(all_findings)
     if all_findings:
         categories = sorted({f.category for f in all_findings})
