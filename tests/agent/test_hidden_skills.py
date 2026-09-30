@@ -16,18 +16,19 @@ def test_hidden_offer_surfaces_preserve_explicit_bundle_load(tmp_path, monkeypat
         directory = skills / name
         directory.mkdir(parents=True)
         (directory / "SKILL.md").write_text(
-            f"---\nname: {name}\ndescription: Probe skill\n---\nPayload for {name}.\n"
+            f"---\nname: {name}\ndescription: Probe skill\n---\nPayload for {name}.\n",
+            encoding="utf-8",
         )
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({"skills": {
         "hidden": '["hidden-probe"]',
         "platform_hidden": {"telegram": ["platform-probe"]},
         "disabled": ["disabled-probe"],
-    }}))
+    }}), encoding="utf-8")
     bundles = tmp_path / "skill-bundles"
     bundles.mkdir()
     (bundles / "probe.yaml").write_text(yaml.safe_dump({
         "name": "probe", "skills": ["hidden-probe/SKILL", "disabled-probe/SKILL"],
-    }))
+    }), encoding="utf-8")
 
     from agent.prompt_builder import build_skills_system_prompt
     from agent.skill_bundles import build_bundle_invocation_message, reload_bundles
