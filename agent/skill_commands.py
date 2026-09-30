@@ -379,9 +379,10 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         from tools.skills_tool import _skills_dir, _get_disabled_skill_names
         from agent.skill_utils import (
             get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files, iter_skill_index_files,
+            get_hidden_skill_names,
         )
         from hermes_cli.commands import resolve_command
-        disabled = _get_disabled_skill_names()
+        disabled = _get_disabled_skill_names() | get_hidden_skill_names(platform)
         seen_names: set = set()
         # Precedence: project (through the quarantine chokepoint) > local > external.
         # Resolve the local dir at call time: import-time SKILLS_DIR is frozen to

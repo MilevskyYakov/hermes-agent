@@ -285,6 +285,18 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return disabled - ESSENTIAL_SKILLS
 
 
+def get_hidden_skill_names(platform: str | None = None) -> Set[str]:
+    """Offer-only exclusions; explicit skill and bundle loads remain available."""
+    skills_cfg = _skills_cfg() or {}
+    from gateway.session_context import get_session_env
+    resolved_platform = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
+    hidden = _normalize_string_set(skills_cfg.get("hidden"))
+    platform_hidden = skills_cfg.get("platform_hidden")
+    if resolved_platform and isinstance(platform_hidden, dict):
+        hidden |= _normalize_string_set(platform_hidden.get(resolved_platform))
+    return hidden
+
+
 def parse_config_string_list(value) -> List[str]:
     """Normalize a config value that may hold a JSON-array string into a list.
     ``hermes config set`` stores lists as quoted JSON/Python-literal strings;

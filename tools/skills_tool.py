@@ -189,10 +189,10 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
 
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
-    from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
+    by name; cached per session. ``skip_disabled=True`` includes hidden/disabled skills (config UI)."""
+    from agent.skill_utils import get_hidden_skill_names, iter_project_skill_files, iter_skill_index_files
     cache_key = "with_disabled" if skip_disabled else "filtered"
-    disabled = set() if skip_disabled else _get_disabled_skill_names()
+    disabled = set() if skip_disabled else _get_disabled_skill_names() | get_hidden_skill_names()
     project_dirs, dirs_to_scan, _ = _skill_search_dirs()
     signature = _skills_scan_signature(dirs_to_scan, disabled)
     now = time.monotonic()
@@ -244,10 +244,13 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         all_skills = _find_all_skills()
         try:
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            from agent.skill_utils import get_hidden_skill_names
+            hidden = get_hidden_skill_names()
             discover_plugins()
             for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
                 frontmatter = plugin_skill.pop("frontmatter", {})
-                if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
+                if (not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"])
+                        or plugin_skill["name"] in hidden):
                     continue
                 all_skills.append(plugin_skill)
         except Exception:
