@@ -68,8 +68,8 @@ def run_builtin() -> list[Metric]:
         browser_console,
         browser_snapshot,
         browser_type,
-        cleanup_browser,
     )
+    from tools.browser_tool_lifecycle import cleanup_browser
 
     metrics = []
 

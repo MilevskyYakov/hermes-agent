@@ -1364,7 +1364,8 @@ def _build_skills_system_prompt_inner(
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
-    disabled = get_disabled_skill_names(_platform_hint or None)
+    from agent.skill_utils import get_hidden_skill_names
+    disabled = get_disabled_skill_names(_platform_hint or None) | get_hidden_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
