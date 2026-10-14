@@ -129,16 +129,15 @@ def test_bare_issue_url_selects_core_not_manual_issue_skill(tmp_path):
 
 
 def test_direct_grill_wins_over_auto_core(tmp_path):
+    from agent.skill_commands import build_skill_invocation_message
+
     _make_skill(tmp_path, "grill", {"auto": "none", "direct": True})
     _make_skill(tmp_path, "dev", {"auto": "core", "direct": True})
 
-    messages = [{
-        "role": "user",
-        "content": (
-            '[IMPORTANT: The user has invoked the "grill" skill, indicating they want '
-            "you to follow its instructions. The full skill content is loaded below.]"
-        ),
-    }]
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        message = build_skill_invocation_message("/grill", task_id="task")
+    assert message and "grill instructions" in message
+    messages = [{"role": "user", "content": message}]
     with patch("tools.skills_tool.SKILLS_DIR", tmp_path), skill_routing_context(
         messages, "session", "turn"
     ):
@@ -146,7 +145,7 @@ def test_direct_grill_wins_over_auto_core(tmp_path):
         manual = _call("grill")
 
     assert core["routing_outcome"] == "manual_precedence"
-    assert manual["routing_outcome"] == "manual_selected"
+    assert manual["load_state"] == "cached"
 
 
 def test_explicit_taskfinish_loads(tmp_path):

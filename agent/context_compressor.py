@@ -684,7 +684,7 @@ def _is_clarify_non_response_sentinel(response: Any) -> bool:
 # PR #44166 emitted ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making re-injection fire
 # even when the marker had survived).
 SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
-# Small skill_view results stay verbatim; shared by emit site and summarizer scan.
+# Fast pruning leaves small results verbatim; other removal paths still need a marker.
 _SKILL_VIEW_PRUNE_MIN_CHARS = 5000
 # Bounds the re-injected "## Pruned Skills" block; newest-referenced win.
 _MAX_PRUNED_SKILL_MARKERS = 20
@@ -721,8 +721,10 @@ def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
     for msg in turns:
         content = msg.get("content")
         names += _extract_pruned_skill_names(_content_text_for_contains(content))
-        if msg.get("role") == "tool" and isinstance(content, str) and len(content) > _SKILL_VIEW_PRUNE_MIN_CHARS:
-            names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
+        skill = call_id_to_skill.get(str(msg.get("tool_call_id") or ""), "")
+        if msg.get("role") == "tool" and skill and _skill_result_has_content(content):
+            canonical = _json_dict(content).get("name")
+            names.append(canonical if isinstance(canonical, str) and canonical else skill)
     return [name for name in dict.fromkeys(names) if name]
 
 
@@ -1442,11 +1444,24 @@ def _sum_execute_code(name, args, content, content_len, line_count):
     return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
 
+def _skill_result_has_content(content):
+    """A removed instruction body needs a receipt; errors/empty cache hits do not."""
+    if not isinstance(content, str) or not content.strip():
+        return False
+    payload = _json_dict(content)
+    if payload:
+        return bool(payload.get("content")) and payload.get("success") is not False
+    return True  # Legacy tools could return a plain-text instruction body.
+
+
 def _sum_skill_view(name, args, content, content_len, line_count):
-    skill = args.get("name", "?")
-    # Ghost-skill defense: canonical marker says instructions are gone and how to reload.
-    marker = " " + _skill_pruned_marker(str(skill)) if content_len > _SKILL_VIEW_PRUNE_MIN_CHARS else ""
-    return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
+    skill = _json_dict(content).get("name") or args.get("name", "?")
+    summary = f"[skill_view] name={skill} ({content_len:,} chars)"
+    if _skill_result_has_content(content):
+        summary += " " + _skill_pruned_marker(str(skill))
+        if args.get("file_path"):
+            summary += f" Reference: skill_view(name={skill!r}, file_path={args['file_path']!r})"
+    return summary
 
 
 def _sum_clarify(name, args, content, content_len, line_count):

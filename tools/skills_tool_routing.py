@@ -72,6 +72,49 @@ def _message_text(content: Any) -> str:
     return ""
 
 
+def _explicit_skill_command(text: str) -> str | None:
+    """One literal edge command, never a quoted example or a prose header.
+
+    Native bundles/stacks use source-checked preload receipts instead. This is
+    deliberately not a natural-language intent classifier.
+    """
+    blank = lambda match: " " * len(match.group())
+    literal = re.sub(
+        r"(?ms)^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*(?:\n|$)|\Z)",
+        blank, text,
+    )
+    literal = re.sub(r"(?m)^[ \t]*>.*$", blank, literal)
+    literal = re.sub(
+        r"`+[^`]*(?:`+|$)|«[^»]*(?:»|$)|“[^”]*(?:”|$)|"
+        r'''(?<!\w)"[^"\n]*(?:"|$)|(?<!\w)'[^'\n]*(?:'|$)''',
+        blank, literal,
+    )
+    commands = list(re.finditer(
+        r"(?<!\S)/([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)(?=\s|$)", literal,
+    ))
+    if len(commands) != 1:
+        return None
+    command = commands[0]
+    leading = not text[:command.start()].strip()
+    if not leading and text[command.end():].strip():
+        return None
+    if re.search(
+        r"(?i)\b(?:не\s+(?:(?:надо|нужно|следует|стоит)\s+)?"
+        r"(?:запуск\w*|запусти\w*|использ\w*|вызыва\w*|вызов\w*|активир\w*|загруж\w*|выполн\w*|открыва\w*|/)|"
+        r"(?:do\s+not|don['’]t|never)\s+(?:run|use|invoke|load|activate|execute)\b|"
+        r"(?:не|not|without|без|don['’]t|never)\s+/)", literal,
+    ):
+        return None
+    if not leading and re.search(
+        r"(?i)(?:^|[.!?\n])\s*(?:что\s+(?:значит|означает|такое)|нужен\s+ли|"
+        r"what\s+is|объясни|обсудим|обсуди|explain|discuss|"
+        r"расскажи\s+(?:о|про)|пример:|example:|цитата:)\s*$",
+        literal[:command.start()],
+    ):
+        return None
+    return command.group(1)
+
+
 @contextmanager
 def skill_routing_context(messages: list, session_id: str, turn_id: str, *, agent=None):
     """Bind trusted per-turn routing input for ``skill_view`` enforcement."""
@@ -81,33 +124,19 @@ def skill_routing_context(messages: list, session_id: str, turn_id: str, *, agen
         text = _message_text(message.get("content")) if isinstance(message, dict) else ""
         if text:
             transcript.append(text)
-        if isinstance(message, dict) and message.get("role") == "user" and text:
+        if isinstance(message, dict) and message.get("role") == "user":
             user_text = text
 
     joined = "\n".join(transcript)
     pruned_counts: dict[str, int] = {}
     for name in re.findall(r"reload with skill_view\(name='([^']+)'\)", joined):
+        name = _normalized_skill_name(name)
         pruned_counts[name] = pruned_counts.get(name, 0) + 1
-
-    direct_skill = None
-    match = re.match(r"\s*/([A-Za-z0-9_-]+)(?:\s|$)", user_text)
-    if match:
-        direct_skill = match.group(1)
-    else:
-        invoked = re.search(
-            r'The user has invoked the "([A-Za-z0-9_-]+)" skill', user_text
-        )
-        if invoked:
-            direct_skill = invoked.group(1)
-        else:
-            stacked = re.search(r"^Skills loaded: ([A-Za-z0-9_-]+)", user_text, re.MULTILINE)
-            if stacked:
-                direct_skill = stacked.group(1)
 
     context = {
         "session_id": session_id or "",
         "turn_id": turn_id or "",
-        "direct_skill": direct_skill,
+        "direct_skill": _explicit_skill_command(user_text),
         "pruned_counts": pruned_counts,
         "agent": agent,
     }

@@ -22,6 +22,7 @@ import sys
 import threading
 import types
 from contextlib import suppress
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -78,6 +79,7 @@ class PluginToolOverrideError(PermissionError):
 
 
 logger = logging.getLogger(__name__)
+
 
 # ``HERMES_PLUGINS_DEBUG=1`` tees verbose discovery logs to stderr in addition to agent.log. Read
 # once at import; tests flip it mid-process via ``_install_plugin_debug_handler(force=True)``.
@@ -600,6 +602,18 @@ class PluginContext:
         Gateway injection needs an existing ``session_key`` plus
         ``plugins.entries.<plugin_id>.allow_gateway_injection``; ``True`` means the gateway accepted the
         request for async dispatch, not that delivery completed."""
+        from hermes_cli.plugins_dispatch import _COMMAND_MESSAGE_CAPTURE
+        capture = _COMMAND_MESSAGE_CAPTURE.get()
+        if capture is not None:
+            with capture["lock"]:
+                if (not capture["active"] or not capture["session_key"]
+                        or capture["home"] != self._manager.scope_key
+                        or (session_key and session_key != capture["session_key"])):
+                    return False
+                if not isinstance(content, str) or not content.strip():
+                    return False
+                capture["messages"].append(content if role == "user" else f"[{role}] {content}")
+                return True
         cli = self._manager._cli_ref
         msg = content if role == "user" else f"[{role}] {content}"
         if cli is not None:
@@ -2002,7 +2016,9 @@ def resolve_plugin_command_result(result: Any) -> Any:
         finally:
             done.set()
 
-    threading.Thread(target=_runner, name="hermes-plugin-command-await", daemon=True).start()
+    run_context = copy_context()
+    threading.Thread(target=run_context.run, args=(_runner,),
+                     name="hermes-plugin-command-await", daemon=True).start()
     if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
         raise TimeoutError("Plugin command async handler did not complete within "
                            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
