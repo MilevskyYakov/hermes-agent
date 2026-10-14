@@ -80,12 +80,13 @@ class TestSkillPrunedMarkerEmit:
         assert _skill_pruned_marker("docker-management") in summary
         assert "reload with skill_view(name='docker-management')" in summary
 
-    def test_small_skill_view_summary_not_marked(self):
+    def test_small_skill_view_summary_is_marked_when_body_is_removed(self):
         summary = _summarize_tool_result(
             "skill_view", '{"name":"docker-management"}', "x" * 1234
         )
-        assert summary == "[skill_view] name=docker-management (1,234 chars)"
-        assert SKILL_PRUNED_MARKER_PREFIX not in summary
+        assert summary.startswith("[skill_view] name=docker-management (1,234 chars)")
+        assert _skill_pruned_marker("docker-management") in summary
+        assert SKILL_PRUNED_MARKER_PREFIX in summary
 
 
     def test_marker_extractor_round_trips_the_emitted_marker(self):

@@ -485,8 +485,13 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _run_plugin_command(handler, arg: str, session_key: str = "") -> dict:
+    plugins = _tools_mod("hermes_cli.plugins")
+    with _tools_mod("hermes_cli.plugins_dispatch").capture_plugin_command_messages(session_key) as messages:
+        output = str(plugins.resolve_plugin_command_result(handler(arg)) or "")
+    if messages:
+        return {"type": "send", "message": "\n\n".join(messages), "notice": output}
+    return {"type": "plugin", "output": output}
 
 
 def _is_profile_skill_command(session: dict, base: str) -> bool:
@@ -506,10 +511,24 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 
 
 def _dispatch_plugin(rid, params, session, name, arg):
-    if handler := _plugin_command_handler(name):
-        with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
-    return None
+    try:
+        result = _run_session_plugin_command(name, arg, session or {})
+        return _ok(rid, result) if result is not None else None
+    except Exception as exc:
+        return _err(rid, 5030, f"Plugin command error: {exc}")
+
+
+def _run_session_plugin_command(name, arg, session):
+    """Bind the recipient's profile around lookup AND execution, never os.environ."""
+    hc = _tools_mod("hermes_constants")
+    home = session.get("profile_home")
+    token = hc.set_hermes_home_override(home) if home else None
+    try:
+        handler = _plugin_command_handler(name) if name else None
+        return _run_plugin_command(handler, arg, session.get("session_key", "")) if handler else None
+    finally:
+        if token is not None:
+            hc.reset_hermes_home_override(token)
 
 
 def _bundle_key_for(name: str):
@@ -837,11 +856,12 @@ def _(rid, params: dict) -> dict:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     if _is_profile_skill_command(session, base):
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-    if plugin_handler := _plugin_command_handler(base) if base else None:
-        try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
+    try:
+        result = _run_session_plugin_command(base, arg, session)
+        if result is not None:
+            return _ok(rid, result if result["type"] == "send" else {"output": result["output"] or "(no output)"})
+    except Exception as e:
+        return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None

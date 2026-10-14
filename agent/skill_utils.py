@@ -25,6 +25,46 @@ EXCLUDED_SKILL_DIRS = frozenset((
 # via skill_view(skill, file_path=...), never scanned as standalone skills.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts", "provenance", "adapters"))
 
+# One receipt format shared by compaction, routing invalidation and task handoff.
+SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
+_SKILL_STRING_LITERAL = r"(?:'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\")"
+_SKILL_PRUNED_MARKER_RE = re.compile(
+    re.escape(SKILL_PRUNED_MARKER_PREFIX)
+    + rf"[^\]]*?reload with skill_view\(name=(?P<name>{_SKILL_STRING_LITERAL})"
+    + rf"(?:, file_path=(?P<path>{_SKILL_STRING_LITERAL}))?\)\]",
+)
+_LEGACY_SKILL_REFERENCE_RE = re.compile(
+    rf" Reference: skill_view\(name=(?P<name>{_SKILL_STRING_LITERAL}), file_path=(?P<path>{_SKILL_STRING_LITERAL})\)",
+)
+
+
+def _skill_reload_call(name: str, file_path: str | None = None) -> str:
+    return f"skill_view(name={name!r}" + (f", file_path={file_path!r}" if file_path else "") + ")"
+
+
+def _skill_pruned_marker(name: str, file_path: str | None = None) -> str:
+    return f"{SKILL_PRUNED_MARKER_PREFIX} content lost in compression; reload with {_skill_reload_call(name, file_path)}]"
+
+
+def _extract_pruned_skill_receipts(text: str) -> list[tuple[str, str | None]]:
+    """Read data literals, never evaluate calls; retain duplicate events for routing."""
+    receipts = []
+    for match in _SKILL_PRUNED_MARKER_RE.finditer(text or ""):
+        try:
+            name = ast.literal_eval(match["name"])
+            path = ast.literal_eval(match["path"]) if match["path"] else None
+            legacy = _LEGACY_SKILL_REFERENCE_RE.match(text, match.end())
+            if path is None and legacy and ast.literal_eval(legacy["name"]) == name:
+                path = ast.literal_eval(legacy["path"])
+            receipts.append((name, path))
+        except (ValueError, SyntaxError):
+            continue
+    return receipts
+
+
+def _extract_pruned_skill_names(text: str) -> list[str]:
+    return list(dict.fromkeys(name for name, _ in _extract_pruned_skill_receipts(text)))
+
 # Org mirrors live under skills/_org/<org_id>/ and are TOKEN-GATED: the sync
 # client writes the marker after verifying the token; no marker => no org skills
 # load. The marker persists offline so already-pulled org skills keep working.

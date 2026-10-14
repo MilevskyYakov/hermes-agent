@@ -29,6 +29,10 @@ from agent.model_metadata import (
     strip_opaque_replay_items,
 )
 from agent.redact import redact_sensitive_text
+from agent.skill_utils import (
+    SKILL_PRUNED_MARKER_PREFIX, _skill_pruned_marker,
+    _extract_pruned_skill_names, _extract_pruned_skill_receipts,
+)
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -683,57 +687,52 @@ def _is_clarify_non_response_sentinel(response: Any) -> bool:
 # matches against the same string, so the emit side and the check side can never drift apart (the original
 # PR #44166 emitted ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making re-injection fire
 # even when the marker had survived).
-SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
-# Small skill_view results stay verbatim; shared by emit site and summarizer scan.
+# Fast pruning leaves small results verbatim; other removal paths still need a marker.
 _SKILL_VIEW_PRUNE_MIN_CHARS = 5000
 # Bounds the re-injected "## Pruned Skills" block; newest-referenced win.
 _MAX_PRUNED_SKILL_MARKERS = 20
 
 
-def _skill_pruned_marker(skill_name: str) -> str:
-    """Return the canonical prune marker for *skill_name* (shared by emit and check sites)."""
-    return (
-        f"{SKILL_PRUNED_MARKER_PREFIX} content lost in compression; "
-        f"reload with skill_view(name='{skill_name}')]"
-    )
-
-
-# Anchored on the shared prefix so marker wording changes stay in sync.
-_SKILL_PRUNED_MARKER_RE = re.compile(
-    re.escape(SKILL_PRUNED_MARKER_PREFIX) + r"[^\]]*?reload with skill_view\(name='([^']+)'\)",
-)
-
-
-def _extract_pruned_skill_names(text: str) -> list[str]:
-    """Return skill names referenced by prune markers in *text*, in order."""
-    return list(dict.fromkeys(m.group(1) for m in _SKILL_PRUNED_MARKER_RE.finditer(text or "")))
-
-
 def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
-    """Skill names about to be lost in compaction: demoted ``skill_view`` rows and raw, never-demoted bodies."""
-    call_id_to_skill: dict[str, str] = {}
-    for idx, skill in _skill_view_call_sites(turns):
-        for tc in turns[idx].get("tool_calls") or []:
+    """Compatibility name-only view; compaction retains full target identities."""
+    return list(dict.fromkeys(name for name, _ in _collect_ghosted_skill_receipts(turns)))
+
+
+def _collect_ghosted_skill_receipts(turns: List[Dict[str, Any]]) -> list[tuple[str, str | None]]:
+    call_id_to_args = {}
+    for msg in turns:
+        for tc in msg.get("tool_calls") or []:
             cid = _tc_get(tc, "id")
-            if cid and _tc_get(_tc_get(tc, "function", {}), "name") == "skill_view":
-                call_id_to_skill[cid] = skill
-    names: list[str] = []
+            name, args = _extract_tool_call_name_and_args(tc)
+            if cid and name == "skill_view":
+                call_id_to_args[cid] = _json_dict(args)
+    receipts = []
     for msg in turns:
         content = msg.get("content")
-        names += _extract_pruned_skill_names(_content_text_for_contains(content))
-        if msg.get("role") == "tool" and isinstance(content, str) and len(content) > _SKILL_VIEW_PRUNE_MIN_CHARS:
-            names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
-    return [name for name in dict.fromkeys(names) if name]
+        prior = _extract_pruned_skill_receipts(_content_text_for_contains(content))
+        receipts.extend(prior)
+        args = call_id_to_args.get(str(msg.get("tool_call_id") or ""), {})
+        skill = args.get("name")
+        if prior:
+            continue
+        if msg.get("role") == "tool" and skill and _skill_result_has_content(content):
+            canonical = _json_dict(content).get("name")
+            name = canonical if isinstance(canonical, str) and canonical else skill
+            path = args.get("file_path")
+            if isinstance(name, str):
+                receipts.append((name, path if isinstance(path, str) and path else None))
+    return list(dict.fromkeys(receipts))
 
 
 _PRUNED_SKILLS_SECTION_HEADING = "## Pruned Skills"
 
 
-def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
+def _reinject_pruned_skill_markers(summary: str, skill_names: list) -> str:
     """Deterministically restore prune markers the summarizer dropped.
     Presence is checked against the canonical marker string; the appended block is plain body text (no
     handoff prefix/scaffolding) and is redacted like all others."""
-    missing = [_skill_pruned_marker(name) for name in skill_names if _skill_pruned_marker(name) not in summary]
+    markers = [_skill_pruned_marker(*(item if isinstance(item, tuple) else (item,))) for item in skill_names]
+    missing = [marker for marker in dict.fromkeys(markers) if marker not in summary]
     if not missing:
         return summary
     block = (
@@ -741,8 +740,8 @@ def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
         + "\n".join(missing)
         + "\n(The listed skills' instructions were pruned during context "
         "compression. Reload with the skill_view call in each marker before "
-        "relying on that skill; one reload per skill is enough — ignore any "
-        "older markers for the same skill.)"
+        "relying on those instructions. Reload each listed root/reference target "
+        "once; ignore older duplicate markers for that same target.)"
     )
     return summary + _redact_compaction_text(block)
 
@@ -1442,11 +1441,23 @@ def _sum_execute_code(name, args, content, content_len, line_count):
     return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
 
+def _skill_result_has_content(content):
+    """A removed instruction body needs a receipt; errors/empty cache hits do not."""
+    if not isinstance(content, str) or not content.strip():
+        return False
+    payload = _json_dict(content)
+    if payload:
+        return bool(payload.get("content")) and payload.get("success") is not False
+    return True  # Legacy tools could return a plain-text instruction body.
+
+
 def _sum_skill_view(name, args, content, content_len, line_count):
-    skill = args.get("name", "?")
-    # Ghost-skill defense: canonical marker says instructions are gone and how to reload.
-    marker = " " + _skill_pruned_marker(str(skill)) if content_len > _SKILL_VIEW_PRUNE_MIN_CHARS else ""
-    return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
+    skill = _json_dict(content).get("name") or args.get("name", "?")
+    summary = f"[skill_view] name={skill} ({content_len:,} chars)"
+    if _skill_result_has_content(content):
+        path = args.get("file_path")
+        summary += " " + _skill_pruned_marker(str(skill), path if isinstance(path, str) else None)
+    return summary
 
 
 def _sum_clarify(name, args, content, content_len, line_count):
@@ -2985,7 +2996,9 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
                     assistant_actions.append(text)
             elif role == "tool":
                 tool_name, tool_args = call_id_to_tool.get(str(msg.get("tool_call_id") or ""), ("unknown", ""))
-                tool_actions.append(_summarize_tool_result(tool_name, tool_args, text or ""))
+                # Skill success/body must be read before display truncation destroys JSON.
+                payload = msg.get("content") if tool_name == "skill_view" else text
+                tool_actions.append(_redact_compaction_text(_summarize_tool_result(tool_name, tool_args, payload or "")))
                 if re.search(r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b", text, re.I):
                     blockers.append(text[:500])
         return {
@@ -3058,7 +3071,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # routinely cuts [SKILL_PRUNED: ...] markers out of the compacted turns. Re-derive the ghosted
         # skills from the raw turn contents and re-inject deterministically, exactly like the LLM-summary
         # path.
-        _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
+        _pruned_names = list(dict.fromkeys(
+            _collect_ghosted_skill_receipts(turns_to_summarize)
+            + _extract_pruned_skill_receipts(self._previous_summary or "")
+        ))
         del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
         summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
@@ -3082,6 +3098,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             protected.add(i)
         result = list(messages)
         demoted = 0
+        calls = {str(_tc_get(tc, "id")): _extract_tool_call_name_and_args(tc)
+                 for msg in messages for tc in msg.get("tool_calls") or []}
         for i in range(tail_start, len(messages)):
             msg = messages[i]
             content = msg.get("content")
@@ -3089,7 +3107,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 continue
             if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
                 continue
-            result[i] = _rewritten(msg, _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id))
+            tool_name, tool_args = calls.get(str(msg.get("tool_call_id") or ""), (msg.get("tool_name") or "", "{}"))
+            stub = (_summarize_tool_result(tool_name, tool_args, content) if tool_name == "skill_view"
+                    else _lean_recovery_stub(tool_name, len(content), session_id))
+            result[i] = _rewritten(msg, stub)
             demoted += 1
         if demoted and not self.quiet_mode:
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
@@ -3275,7 +3296,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # Ghost-skill defense: LLMs paraphrase [SKILL_PRUNED] markers away; collect the names
         # deterministically BEFORE the call (from the turn LIST, not the bounded text), re-inject after.
         _pruned_skill_names = list(dict.fromkeys(
-            _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
+            _collect_ghosted_skill_receipts(turns_to_summarize) + _extract_pruned_skill_receipts(self._previous_summary or "")
         ))[:_MAX_PRUNED_SKILL_MARKERS]
         # Lean mode even-samples oversized input (one bounded request, never a second).
         bound = self._sample_summary_input if getattr(self, "tail_mode", "lean") == "lean" else self._bound_summary_input
