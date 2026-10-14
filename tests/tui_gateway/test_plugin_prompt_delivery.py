@@ -1,5 +1,6 @@
 """User-dispatched plugin injections must reach the TUI, not an unread CLI queue."""
 import asyncio
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from queue import SimpleQueue
@@ -35,7 +36,7 @@ def dispatch(handler, command, method):
 
 @pytest.mark.parametrize("method", ["slash.exec", "command.dispatch"])
 @pytest.mark.parametrize("command", COMMANDS)
-def test_plugin_prompt_reaches_model_once(context, method, command):
+def test_plugin_prompt_returned_once_in_rpc(context, method, command):
     ctx, manager = context
     cli = SimpleNamespace(_agent_running=False, _pending_input=SimpleQueue(), _interrupt_queue=SimpleQueue())
     manager._cli_ref = cli
@@ -130,3 +131,61 @@ def test_capture_rejects_foreign_profile_and_empty_payload(context):
         manager.scope_key = "another-profile"
         assert not ctx.inject_message("foreign")
     assert messages == []
+
+
+@pytest.mark.parametrize("method", ["slash.exec", "command.dispatch"])
+@pytest.mark.parametrize("mode", ["prompt", "status", "fail", "async"])
+def test_real_profile_discovery_uses_recipient_home(tmp_path, monkeypatch, method, mode):
+    from hermes_cli import plugins
+    from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    source = '''from hermes_constants import get_hermes_home
+def register(ctx):
+    def handler(arg):
+        home = str(get_hermes_home())
+        if arg == "status":
+            return home
+        assert ctx.inject_message(home)
+        if arg == "fail":
+            raise ValueError("fixture failure")
+        return "queued"
+    async def async_handler(arg):
+        return handler(arg)
+    ctx.register_command("receipt-profile", lambda arg: async_handler(arg) if arg == "async" else handler(arg))
+'''
+    # Real managers/discovery; isolate their cache rather than mocking lookup.
+    monkeypatch.setattr(plugins, "_plugin_managers_by_home", {})
+    monkeypatch.setattr(plugins, "_plugin_manager", None)
+    for home in homes:
+        plug = home / "plugins" / "receipt-fixture"
+        plug.mkdir(parents=True)
+        (plug / "plugin.yaml").write_text("name: receipt-fixture\nversion: 1.0.0\ndescription: Offline fixture\n")
+        (plug / "__init__.py").write_text(source)
+        (home / "config.yaml").write_text(json.dumps({"plugins": {"enabled": ["receipt-fixture"]}}))
+        token = set_hermes_home_override(home)
+        try:
+            plugins.get_plugin_manager().discover_and_load()
+            assert plugins.get_plugin_command_handler("receipt-profile")
+        finally:
+            reset_hermes_home_override(token)
+    token = set_hermes_home_override(homes[0])
+    try:
+        for index, home in enumerate(homes):
+            sid = f"profile-{index}"
+            with patch.dict(server._sessions, {sid: {"session_key": sid, "profile_home": str(home), "agent": None, "running": False}}):
+                response = server.handle_request({"id": sid, "method": method, "params": {
+                    "session_id": sid, "name": "receipt-profile", "arg": mode,
+                    "command": "receipt-profile " + mode}})
+            assert response is not None
+            result = response.get("result", {})
+            if mode == "fail":
+                assert result.get("type") != "send"
+                assert "fixture failure" in str(response)
+            elif mode == "status":
+                assert result["output"] == str(home) and result.get("type") != "send"
+            else:
+                assert result["type"] == "send" and result["message"] == str(home)
+            assert get_hermes_home() == homes[0]
+    finally:
+        reset_hermes_home_override(token)

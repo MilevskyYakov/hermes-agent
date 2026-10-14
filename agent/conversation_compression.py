@@ -2024,18 +2024,19 @@ def _pruned_skill_reload_notice(compressed: list) -> str:
     """Reload notice for skills whose bodies were pruned, or ``""``.
     Scans ``[SKILL_PRUNED: ...]`` markers in the post-compression transcript; first-seen order, deduplicated,
     capped at ``_MAX_PRUNED_SKILL_MARKERS``."""
-    from agent.context_compressor import _MAX_PRUNED_SKILL_MARKERS, _extract_pruned_skill_names
+    from agent.context_compressor import _MAX_PRUNED_SKILL_MARKERS
+    from agent.skill_utils import _extract_pruned_skill_receipts, _skill_reload_call
     names: list = []
     for message in compressed:
         if not isinstance(message, dict):
             continue
-        for name in _extract_pruned_skill_names(_message_text(message)):
+        for name in _extract_pruned_skill_receipts(_message_text(message)):
             if name not in names:
                 names.append(name)
     del names[_MAX_PRUNED_SKILL_MARKERS:]
     if not names:
         return ""
-    calls = "; ".join(f"skill_view(name='{name}')" for name in names)
+    calls = "; ".join(_skill_reload_call(*target) for target in names)
     return (
         f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
         "The task list above crossed the compression boundary verbatim, but "

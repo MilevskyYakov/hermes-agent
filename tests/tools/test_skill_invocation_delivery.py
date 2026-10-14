@@ -26,6 +26,8 @@ def isolated_routing(tmp_path, monkeypatch):
     "Подготовь задачу /issue", "Подготовь задачу\n/issue", "Prepare task /issue  ",
     "Сохрани текст «пример», подготовь задачу /issue",
     "Не меняй код, подготовь задачу /issue",
+    "Создай задачу проверить так все скиллы /issue",
+    "Можно точно размещать, вопрос как это внедрить, для этого создай отдельную задачу с полностью пописанным контекстом /issue",
 ])
 def test_single_explicit_command_owns_turn(text):
     with routing.skill_routing_context([{"role": "user", "content": text}], "s", "t"):
@@ -38,6 +40,12 @@ def test_single_explicit_command_owns_turn(text):
 
 @pytest.mark.parametrize("text", [
     "Расскажи о skill issue", "Используй скилл issue", "Обсудим /issue",
+    "В документации упоминается /issue", "Название команды /issue",
+    "Я не хочу запускать /issue", "Не разрешаю запускать /issue",
+    "Запрещено использовать /issue", "Never, ever run /issue",
+    "Расскажи подробнее про /issue", "Что делает /issue",
+    "Если разрешу, запусти /issue", "Не разрешаю, запусти /issue",
+    "Не разрешаю запускать\n/issue", "Пример:\n/issue",
     "Объясни /issue", "Что означает /issue", "What is /issue", "Should I use /issue?",
     "Не запускай /issue", "Не используй /issue", "Не надо запускать /issue",
     "Do not run /issue", "Don't use /issue", "Never invoke /issue", "/issue не запускай",
@@ -146,3 +154,92 @@ def test_image_only_turn_does_not_inherit_a_manual_command():
                 {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "fixture"}}]}]
     with routing.skill_routing_context(messages, "s", "image"):
         assert not _call("issue")["success"]
+
+
+def _skill_pair(call_id, args, payload):
+    return [{"role": "assistant", "content": "", "tool_calls": [{
+        "id": call_id, "type": "function", "function": {
+            "name": "skill_view", "arguments": json.dumps(args)}}]},
+        {"role": "tool", "tool_call_id": call_id, "tool_name": "skill_view", "content": json.dumps(payload)}]
+
+
+@pytest.fixture
+def compressor(monkeypatch):
+    from agent.context_compressor import ContextCompressor
+    def offline(*args, **kwargs):
+        raise AssertionError("Network forbidden in offline regression")
+    monkeypatch.setattr("socket.socket.connect", offline)
+    monkeypatch.setattr("socket.create_connection", offline)
+    monkeypatch.setattr("agent.context_compressor.get_model_context_length", lambda *a, **kw: 100000)
+    return ContextCompressor(model="test/offline", quiet_mode=True, protect_first_n=1, protect_last_n=2)
+
+
+def test_real_lean_compress_preserves_short_reference_receipt(compressor):
+    messages = [{"role": "system", "content": "Stable system prompt"}]
+    for i in range(8):
+        messages += [{"role": "user", "content": "old user " + "x" * 16000},
+                     {"role": "assistant", "content": "old answer " + "y" * 16000}]
+    args = {"name": "issue", "file_path": "references/policy.md"}
+    messages += _skill_pair("short-policy", args, {"success": True, "name": "issue", "content": "SHORT POLICY " * 180})
+    for i in range(7):
+        messages += [{"role": "assistant", "content": "", "tool_calls": [{"id": str(i), "function": {"name": "read_file", "arguments": "{}"}}]},
+                     {"role": "tool", "tool_call_id": str(i), "tool_name": "read_file", "content": "small"}]
+    messages += [{"role": "assistant", "content": "Continue task"}, {"role": "user", "content": "Continue task"}]
+    with patch.object(compressor, "_call_summary_llm", return_value="## Goal\nWork on old task.") as summary:
+        after = compressor.compress(messages, force=True)
+    assert summary.call_count == 1
+    result = next(m["content"] for m in after if m.get("tool_call_id") == "short-policy")
+    assert "SHORT POLICY" not in result
+    assert "SKILL_PRUNED" in result and "file_path='references/policy.md'" in result
+
+
+@pytest.mark.parametrize("mode", ["fresh", "iterative", "fallback"])
+def test_full_summary_preserves_each_exact_reload(compressor, tmp_path, mode):
+    from agent.conversation_compression import _pruned_skill_reload_notice
+    paths = [None, "references/a.md", "references/b's (policy).md"]
+    turns = [{"role": "user", "content": "/issue"}]
+    with routing.skill_routing_context(turns, "references", "first"):
+        for i, path in enumerate(paths):
+            args = {"name": "issue"}
+            if path:
+                target = tmp_path / "issue" / path
+                target.parent.mkdir(exist_ok=True)
+                target.write_text("REFERENCE POLICY " * 120)
+                args["file_path"] = path
+            payload = _call(**args)
+            assert payload["success"] and payload["content"]
+            turns += _skill_pair(str(i), args, payload)
+    compressor.tail_mode = "legacy"
+    with patch.object(compressor, "_call_summary_llm", return_value="## Goal\nContinue task without identifiers."):
+        if mode == "fallback":
+            summary = compressor._build_static_fallback_summary(turns)
+        else:
+            summary = compressor._generate_summary(turns)
+            if mode == "iterative":
+                summary = compressor._generate_summary([{"role": "user", "content": "Continue"}])
+    assert summary
+    notice = _pruned_skill_reload_notice([{"role": "assistant", "content": summary}])
+    for path in paths:
+        call = "skill_view(name='issue'" + (f", file_path={path!r}" if path else "") + ")"
+        assert call in summary and call in notice
+    skills_tool.reset_skill_view_dedup()
+    with routing.skill_routing_context([{"role": "assistant", "content": summary}, turns[0]], "references", "reload"):
+        for path in paths:
+            payload = _call("issue", **({"file_path": path} if path else {}))
+            assert payload["success"] and payload["content"]
+
+
+def test_failed_reference_lookup_never_becomes_fallback_ghost(compressor, tmp_path):
+    folder = tmp_path / "issue/references"
+    folder.mkdir()
+    for i in range(40):
+        (folder / f"long-evidence-reference-name-{i}.md").write_text("unused")
+    args = {"name": "issue", "file_path": "references/not-found.md"}
+    turns = [{"role": "user", "content": "/issue"}]
+    with routing.skill_routing_context(turns, "missing", "first"):
+        payload = _call(**args)
+    assert not payload["success"] and not payload.get("content") and len(json.dumps(payload)) > 600
+    turns += _skill_pair("failed", args, payload)
+    summary = compressor._build_static_fallback_summary(turns)
+    assert "SKILL_PRUNED" not in summary
+    assert "not-found.md" in summary and "error" in summary.lower()

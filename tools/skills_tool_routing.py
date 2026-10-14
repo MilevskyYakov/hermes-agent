@@ -13,6 +13,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from agent.skill_utils import _extract_pruned_skill_receipts
+
 logger = logging.getLogger(__name__)
 
 # Skill-routing state is session-scoped and payload-free: only skill names,
@@ -99,19 +101,31 @@ def _explicit_skill_command(text: str) -> str | None:
     if not leading and text[command.end():].strip():
         return None
     if re.search(
-        r"(?i)\b(?:не\s+(?:(?:надо|нужно|следует|стоит)\s+)?"
+        r"(?i)\b(?:запрещ\w*|не\s+(?:разреш\w*|хочу)\b|never\b|не\s+(?:(?:надо|нужно|следует|стоит)\s+)?"
         r"(?:запуск\w*|запусти\w*|использ\w*|вызыва\w*|вызов\w*|активир\w*|загруж\w*|выполн\w*|открыва\w*|/)|"
         r"(?:do\s+not|don['’]t|never)\s+(?:run|use|invoke|load|activate|execute)\b|"
         r"(?:не|not|without|без|don['’]t|never)\s+/)", literal,
     ):
         return None
-    if not leading and re.search(
-        r"(?i)(?:^|[.!?\n])\s*(?:что\s+(?:значит|означает|такое)|нужен\s+ли|"
-        r"what\s+is|объясни|обсудим|обсуди|explain|discuss|"
-        r"расскажи\s+(?:о|про)|пример:|example:|цитата:)\s*$",
-        literal[:command.start()],
-    ):
-        return None
+    if not leading:
+        before = literal[:command.start()].rstrip()
+        if re.search(r"(?i)\b(?:если|когда|if|when|unless)\b|\?", before):
+            return None
+        if re.search(r"(?i)(?:^|[.!?\n])\s*(?:что\b.*|what\b.*|объясни.*|обсудим.*|обсуди.*|"
+                     r"explain.*|discuss.*|расскажи.*|пример:|example:|цитата:)\s*$", before):
+            return None
+        standalone = not text[:command.start()].rsplit("\n", 1)[-1].strip()
+        if not standalone:
+            # Bounded imperative syntax, not an arbitrary prose suffix or NLP classifier.
+            # Ambiguous wording can use a leading command or a separate command line.
+            clauses = [part.strip() for part in re.split(r"[,;.!\n]", before) if part.strip()]
+            if not clauses or not re.match(
+                r"(?i)^(?:(?:для этого|пожалуйста|please)\s+)?"
+                r"(?:создай|подготовь|сделай|проверь|проведи|разбери|исправь|запусти|выполни|"
+                r"используй|сохрани|оформи|create|prepare|check|review|audit|fix|run|execute|use|save)\b",
+                clauses[-1],
+            ):
+                return None
     return command.group(1)
 
 
@@ -129,7 +143,7 @@ def skill_routing_context(messages: list, session_id: str, turn_id: str, *, agen
 
     joined = "\n".join(transcript)
     pruned_counts: dict[str, int] = {}
-    for name in re.findall(r"reload with skill_view\(name='([^']+)'\)", joined):
+    for name, _ in _extract_pruned_skill_receipts(joined):
         name = _normalized_skill_name(name)
         pruned_counts[name] = pruned_counts.get(name, 0) + 1
 
