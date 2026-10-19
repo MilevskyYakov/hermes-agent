@@ -214,6 +214,48 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+@pytest.mark.parametrize("reply,interruption,allowed", [
+    ("Да", None, True), ("Нет", None, True), ("Го делать", None, True),
+    ("Да", "New topic: explain SQL", False),
+])
+def test_text_only_skill_proposal_keeps_owner_for_reply(tmp_path, monkeypatch, reply, interruption, allowed):
+    import json
+    from hermes_constants import get_hermes_home
+    from agent.skill_commands import build_skill_invocation_message
+    from tools import skills_tool, skills_tool_routing as routing
+    from tests.tools.test_skill_routing import _call, _make_skill
+
+    routing._reset_skill_routing_state()
+    skills_tool.reset_skill_view_dedup()
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", tmp_path)
+    _make_skill(tmp_path, "owner", {"auto": "none", "direct": True})
+    _make_skill(tmp_path, "helper", {"auto": "core", "direct": True, "dependency": True})
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({
+        "skills": {"external_dirs": [str(tmp_path)]},
+    }), encoding="utf-8")
+    try:
+        agent = _FakeAgent()
+        message = build_skill_invocation_message("/owner", "Propose an explanation")
+        first = _build(agent, user_message=message)
+        history = first.messages + [{"role": "assistant", "content": "Use this proposal?"}]
+        if interruption:
+            changed = _build(agent, user_message=interruption, conversation_history=history)
+            history = changed.messages + [{"role": "assistant", "content": "Discuss SQL?"}]
+        before = json.dumps(history)
+        following = _build(agent, user_message=reply, conversation_history=history)
+        # The initial proposal and any intervening topic change made no tool calls.
+        with routing.skill_routing_context(following.messages, agent.session_id, following.turn_id):
+            assert _call("helper", as_dependency=True)["success"] is allowed
+            assert _call("owner")["success"] is allowed
+            if allowed:
+                assert not _call("helper")["success"]
+        assert json.dumps(history) == before
+        assert following.active_system_prompt == first.active_system_prompt == "SYSTEM"
+    finally:
+        routing._reset_skill_routing_state()
+        skills_tool.reset_skill_view_dedup()
+
+
 def test_preflight_timeout_stops_turn_before_provider_boundary():
     """An unchanged oversized payload must not escape turn construction."""
     agent = _FakeAgent()
