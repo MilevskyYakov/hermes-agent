@@ -13,6 +13,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from agent.skill_utils import _extract_pruned_skill_receipts
+
 logger = logging.getLogger(__name__)
 
 # Skill-routing state is session-scoped and payload-free: only skill names,
@@ -21,7 +23,7 @@ _SKILL_ROUTE_CONTEXT: ContextVar[dict | None] = ContextVar(
     "skill_route_context", default=None
 )
 _SKILL_ROUTE_LOCK = threading.Lock()
-_SKILL_ROUTE_SESSIONS: OrderedDict[str, dict] = OrderedDict()
+_SKILL_ROUTE_SESSIONS: OrderedDict[tuple, dict] = OrderedDict()
 # ponytail: process-local receipts; reload the owner after restart or bounded eviction.
 _SKILL_PRELOADS: OrderedDict[tuple, list[dict]] = OrderedDict()
 _SKILL_ROUTE_SESSION_LIMIT = 512
@@ -72,42 +74,100 @@ def _message_text(content: Any) -> str:
     return ""
 
 
+def _explicit_skill_command(text: str) -> str | None:
+    """One literal edge command, never a quoted example or a prose header.
+
+    Native bundles/stacks use source-checked preload receipts instead. This is
+    deliberately not a natural-language intent classifier.
+    """
+    blank = lambda match: " " * len(match.group())
+    literal = re.sub(
+        r"(?ms)^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*(?:\n|$)|\Z)",
+        blank, text,
+    )
+    literal = re.sub(r"(?m)^[ \t]*>.*$", blank, literal)
+    literal = re.sub(
+        r"`+[^`]*(?:`+|$)|«[^»]*(?:»|$)|“[^”]*(?:”|$)|"
+        r'''(?<!\w)"[^"\n]*(?:"|$)|(?<!\w)'[^'\n]*(?:'|$)''',
+        blank, literal,
+    )
+    commands = list(re.finditer(
+        r"(?<!\S)/([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)(?=\s|$)", literal,
+    ))
+    if len(commands) != 1:
+        return None
+    command = commands[0]
+    leading = not text[:command.start()].strip()
+    if not leading and text[command.end():].strip():
+        return None
+    if re.search(
+        r"(?i)\b(?:запрещ\w*|не\s+(?:разреш\w*|хочу)\b|never\b|не\s+(?:(?:надо|нужно|следует|стоит)\s+)?"
+        r"(?:запуск\w*|запусти\w*|использ\w*|вызыва\w*|вызов\w*|активир\w*|загруж\w*|выполн\w*|открыва\w*|/)|"
+        r"(?:do\s+not|don['’]t|never)\s+(?:run|use|invoke|load|activate|execute)\b|"
+        r"(?:не|not|without|без|don['’]t|never)\s+/)", literal,
+    ):
+        return None
+    if not leading:
+        before = literal[:command.start()].rstrip()
+        if re.search(r"(?i)\b(?:если|когда|if|when|unless)\b|\?", before):
+            return None
+        if re.search(r"(?i)(?:^|[.!?\n])\s*(?:что\b.*|what\b.*|объясни.*|обсудим.*|обсуди.*|"
+                     r"explain.*|discuss.*|расскажи.*|пример:|example:|цитата:)\s*$", before):
+            return None
+        standalone = not text[:command.start()].rsplit("\n", 1)[-1].strip()
+        if not standalone:
+            # Bounded imperative syntax, not an arbitrary prose suffix or NLP classifier.
+            # Ambiguous wording can use a leading command or a separate command line.
+            clauses = [part.strip() for part in re.split(r"[,;.!\n]", before) if part.strip()]
+            if not clauses or not re.match(
+                r"(?i)^(?:(?:для этого|пожалуйста|please)\s+)?"
+                r"(?:создай|подготовь|сделай|проверь|проведи|разбери|исправь|запусти|выполни|"
+                r"используй|сохрани|оформи|create|prepare|check|review|audit|fix|run|execute|use|save)\b",
+                clauses[-1],
+            ):
+                return None
+    return command.group(1)
+
+
+def _is_workflow_reply(text: str) -> bool:
+    """Recognize a bounded follow-up, not permission to write or execute.
+
+    ponytail: short literal replies only; ambiguous prose needs explicit invocation,
+    not an inferred topic classifier that can revive an unrelated manual workflow.
+    """
+    text = " ".join(text.casefold().split()).rstrip(".!").strip()
+    return re.fullmatch(
+        r"(?:(?:да|ок|yes|ok)[,!]?\s+)?"
+        r"(?:да|нет|ок|окей|принято|согласен|продолжай|делай|го(?: делать)?|"
+        r"создай этот вариант|сделай этот вариант|yes|no|ok|okay|continue|go ahead|do it)",
+        text,
+    ) is not None
+
+
 @contextmanager
 def skill_routing_context(messages: list, session_id: str, turn_id: str, *, agent=None):
     """Bind trusted per-turn routing input for ``skill_view`` enforcement."""
     user_text = ""
+    previous_user_text = ""
     transcript = []
     for message in messages or []:
         text = _message_text(message.get("content")) if isinstance(message, dict) else ""
         if text:
             transcript.append(text)
-        if isinstance(message, dict) and message.get("role") == "user" and text:
-            user_text = text
+        if isinstance(message, dict) and message.get("role") == "user":
+            previous_user_text, user_text = user_text, text
 
     joined = "\n".join(transcript)
     pruned_counts: dict[str, int] = {}
-    for name in re.findall(r"reload with skill_view\(name='([^']+)'\)", joined):
+    for name, _ in _extract_pruned_skill_receipts(joined):
+        name = _normalized_skill_name(name)
         pruned_counts[name] = pruned_counts.get(name, 0) + 1
-
-    direct_skill = None
-    match = re.match(r"\s*/([A-Za-z0-9_-]+)(?:\s|$)", user_text)
-    if match:
-        direct_skill = match.group(1)
-    else:
-        invoked = re.search(
-            r'The user has invoked the "([A-Za-z0-9_-]+)" skill', user_text
-        )
-        if invoked:
-            direct_skill = invoked.group(1)
-        else:
-            stacked = re.search(r"^Skills loaded: ([A-Za-z0-9_-]+)", user_text, re.MULTILINE)
-            if stacked:
-                direct_skill = stacked.group(1)
 
     context = {
         "session_id": session_id or "",
         "turn_id": turn_id or "",
-        "direct_skill": direct_skill,
+        "direct_skill": _explicit_skill_command(user_text),
+        "user_key": _preload_key(user_text),
         "pruned_counts": pruned_counts,
         "agent": agent,
     }
@@ -115,7 +175,18 @@ def skill_routing_context(messages: list, session_id: str, turn_id: str, *, agen
     try:
         # A quoted invocation header is not proof that instructions were loaded.
         with _SKILL_ROUTE_LOCK:
-            preloads = list(_SKILL_PRELOADS.get(_preload_key(user_text), []))
+            preloads = list(_SKILL_PRELOADS.get(context["user_key"], []))
+            state = _route_session(context)
+            continuation = state.pop("continuation", None)
+            if continuation and not preloads and not context["direct_skill"]:
+                same_turn = (continuation["turn_id"] == context["turn_id"]
+                             and continuation["user_key"] == context["user_key"])
+                follows_owner = (session_id and _is_workflow_reply(user_text)
+                                 and continuation["user_key"] == _preload_key(previous_user_text))
+                if same_turn or follows_owner:
+                    preloads = [continuation["entry"]]
+                # Revalidate the owner's source and disabled status before restoring it.
+                state["turns"].pop(context["turn_id"] or "__turn__", None)
         owner = None
         for entry in preloads:
             from tools.skills_tool import skill_view
@@ -149,7 +220,9 @@ def _reset_skill_routing_state() -> None:
 
 
 def _route_session(context: dict) -> dict:
-    session_id = context.get("session_id") or "__unscoped__"
+    from hermes_constants import get_hermes_home
+
+    session_id = (str(get_hermes_home()), context.get("session_id") or "__unscoped__")
     state = _SKILL_ROUTE_SESSIONS.setdefault(
         session_id,
         {
@@ -304,6 +377,11 @@ def _skill_route_finish(
         prune_count = max(int(prune_counts.get(name, 0)), int(prune_counts.get(canonical, 0)))
         previous_prune_count = int(state["reloaded_pruned"].get(canonical, 0))
         fingerprint = _source_fingerprint(payload)
+        if direct_match and outcome in {"core_selected", "manual_selected"} and fingerprint:
+            state["continuation"] = {
+                "entry": {"name": payload["name"], "fingerprint": fingerprint},
+                "turn_id": context["turn_id"], "user_key": context["user_key"],
+            }
         cached = bool(fingerprint and state["fingerprints"].get(canonical) == fingerprint
                       and prune_count <= previous_prune_count
                       and not payload.get("setup_needed"))

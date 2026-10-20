@@ -15,10 +15,12 @@ import re
 import threading
 import time
 import types
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -145,6 +147,29 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
         return False
     return hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+
+
+_COMMAND_MESSAGE_CAPTURE: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "plugin_command_messages", default=None,
+)
+
+
+@contextmanager
+def capture_plugin_command_messages(session_key: str):
+    """Capture user-dispatched TUI injections for the same session's RPC reply.
+
+    No global injector is installed. Timeout/exception closes the sink, including
+    copies inherited by an async handler's resolver thread.
+    """
+    capture = {"session_key": session_key, "home": hermes_home_key(), "messages": [],
+               "active": True, "lock": threading.Lock()}
+    token = _COMMAND_MESSAGE_CAPTURE.set(capture)
+    try:
+        yield capture["messages"]
+    finally:
+        with capture["lock"]:
+            capture["active"] = False
+        _COMMAND_MESSAGE_CAPTURE.reset(token)
 
 
 class PluginDispatchMixin:

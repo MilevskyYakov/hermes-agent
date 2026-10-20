@@ -854,6 +854,12 @@ def build_turn_context(
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
+    # Bind native slash receipts even when the proposal has no tool calls. A later
+    # short reply may continue that owner; a text-only topic change must clear it.
+    from tools.skills_tool_routing import skill_routing_context
+    with skill_routing_context(messages, agent.session_id or "", turn_id, agent=agent):
+        pass
+
     agent._user_turn_count += 1
     # Copilot x-initiator: the first API call of this user turn is user-initiated;
     # tool-loop follow-ups revert to "agent".
