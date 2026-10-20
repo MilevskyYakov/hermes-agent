@@ -156,6 +156,65 @@ class TestExternalSkillView:
         assert "external things" in result["content"]
 
 
+@pytest.mark.parametrize("source", ["local", "external"])
+@pytest.mark.parametrize("suffix", ["", "/SKILL", "/SKILL.md"])
+def test_package_lookup_preserves_directory_through_bundle(
+    hermes_home, external_skills_dir, monkeypatch, source, suffix,
+):
+    from agent.skill_bundles import build_bundle_invocation_message
+    from tools import skills_tool  # Register the real skill_view handler.
+    from tools.registry import registry
+
+    directory = external_skills_dir if source == "external" else hermes_home / "skills"
+    package = directory / "lookup-package"
+    (package / "templates").mkdir(parents=True)
+    (package / "SKILL.md").write_text("---\nname: lookup-package\n---\nPackage instructions.\n")
+    (package / "templates/example.md").write_text("Supporting content.\n")
+    (hermes_home / "config.yaml").write_text(json.dumps({"skills": {
+        "external_dirs": [str(external_skills_dir)],
+    }}))
+    bundles = hermes_home / "skill-bundles"
+    bundles.mkdir()
+    lookup = "lookup-package" + suffix
+    (bundles / "lookup-check.yaml").write_text(json.dumps({"skills": [lookup]}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.chdir(hermes_home)
+
+    response = registry.dispatch("skill_view", {"name": lookup})
+    assert isinstance(response, str)
+    loaded = json.loads(response)
+    assert loaded["success"], loaded
+    assert loaded["skill_dir"] == str(package)
+    assert loaded["_source_path"] == str(package / "SKILL.md")
+    assert "templates/example.md" in loaded["linked_files"]["templates"]
+    response = registry.dispatch("skill_view", {
+        "name": lookup, "file_path": "templates/example.md",
+    })
+    assert isinstance(response, str)
+    reference = json.loads(response)
+    assert reference["success"] and reference["content"] == "Supporting content.\n"
+    invocation = build_bundle_invocation_message("/lookup-check", "Only read")
+    assert invocation is not None
+    message, names, missing = invocation
+    assert names == ["lookup-package"] and not missing
+    assert f"[Skill directory: {package}]" in message
+    assert "templates/example.md" in message
+
+
+def test_flat_markdown_lookup_does_not_become_a_package(hermes_home, external_skills_dir, monkeypatch):
+    from tools.skills_tool import skill_view
+
+    (external_skills_dir / "legacy.md").write_text("---\nname: legacy\n---\nFlat instructions.\n")
+    (hermes_home / "config.yaml").write_text(json.dumps({"skills": {
+        "external_dirs": [str(external_skills_dir)],
+    }}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.chdir(hermes_home)
+    result = json.loads(skill_view("legacy"))
+    assert result["success"] and "Flat instructions." in result["content"]
+    assert result["skill_dir"] is None and result["linked_files"] is None
+
+
 @pytest.mark.parametrize("source", ["local", "external", "project"])
 def test_activation_labels_survive_discovery_and_snapshot(hermes_home, tmp_path, monkeypatch, source):
     from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
