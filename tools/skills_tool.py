@@ -344,7 +344,7 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
         if not _is_skill_support_path(direct_path) and direct_path.is_dir() and (direct_path / "SKILL.md").exists():
             _record(direct_path, direct_path / "SKILL.md")
         elif flat.exists() and not _is_skill_support_path(flat):
-            _record(None, flat)
+            _record(flat.parent if flat.name == "SKILL.md" else None, flat)
 
     for search_dir in all_dirs:
         for direct in filter(None, (name, local_category_name)):  # "p:x" with no plugin p → "p/x"
