@@ -2,23 +2,26 @@
 import time
 import uuid
 
-from hermes_question_relay import RelayStore, route_for
+from hermes_question_relay import RelayStore, route_for, load_relay_config
 
 
 def _config():
-    from hermes_cli.config import load_config_readonly
-    return load_config_readonly()
+    return load_relay_config()
 
 
 def resume_note(cli):
     db = getattr(cli, "_session_db", None)
     if db is None:
-        if route_for(_config(), getattr(cli, "session_id", None)) is not None:
+        config = _config()
+        relay = config.get("question_relay")
+        auto = relay.get("auto") if isinstance(relay, dict) else None
+        if (route_for(config, getattr(cli, "session_id", None)) is not None
+                or isinstance(auto, dict) and auto.get("enabled") is True):
             raise RuntimeError("Question relay requires the original session database")
         return ""
     if not getattr(cli, "_question_relay_owner", None):
         cli._question_relay_owner = uuid.uuid4().hex
-    route = route_for(_config(), cli.session_id)
+    route = route_for(_config(), cli.session_id, db)
     note = RelayStore(db).resume_note(cli.session_id, cli._question_relay_owner, route)
     if note:
         cli._question_relay_binding = (cli.session_id, route)
@@ -26,8 +29,12 @@ def resume_note(cli):
 
 
 def block(cli, question, choices, multi_select=False, questions=None):
-    route = route_for(_config(), getattr(cli, "session_id", None))
+    config = _config()
+    route = route_for(config, getattr(cli, "session_id", None), getattr(cli, "_session_db", None))
     if route is None:
+        if config.get("question_relay"):
+            from cli import _cprint
+            _cprint("Question relay: no authorized route for this session; using local clarification.")
         return False, None
     if getattr(cli, "_session_db", None) is None:
         raise RuntimeError("Question relay requires the original session database")
@@ -90,7 +97,7 @@ def poll(cli, response_queue):
     rid, entries = waiting
     store = RelayStore(cli._session_db)
     session_id, route = cli._question_relay_binding
-    if route_for(_config(), session_id) != route:
+    if route_for(_config(), session_id, cli._session_db) != route:
         store.stop_session(session_id)
     row = store.get(rid)
     snapshot = (row["status"], row["delivery"], row["revision"], row["delivered_revision"])
@@ -132,7 +139,7 @@ def tick(cli):
     session_id, route = binding
     try:
         store = RelayStore(cli._session_db)
-        if route_for(_config(), session_id) != route:
+        if route_for(_config(), session_id, cli._session_db) != route:
             store.stop_session(session_id)
         if any(row["status"] == "stopped" for row in store.for_session(session_id)):
             _interrupt(cli)
