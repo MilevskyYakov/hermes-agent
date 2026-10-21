@@ -14,6 +14,7 @@ from functools import partial
 from pathlib import Path
 
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_question_relay import sessions_questions
 
 
 def get_hermes_home():
@@ -938,6 +939,7 @@ def _cmd_stats(db, args):
 
 _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
 _DB_HANDLERS = {
+    "questions": sessions_questions,
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),

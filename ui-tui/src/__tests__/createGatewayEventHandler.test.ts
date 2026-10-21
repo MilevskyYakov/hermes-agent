@@ -1655,6 +1655,22 @@ describe('createGatewayEventHandler', () => {
     expect(clarify?.answers).toEqual({})
   })
 
+  it('resolves a remote answer once without recording a timeout or clearing another request', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { question: 'Color?', request_id: 'remote' }, type: 'clarify.request' } as any)
+    onEvent({ payload: { answers: { q1: 'BLUE' }, request_id: 'other' }, type: 'clarify.resolved' } as any)
+    expect(getOverlayState().clarify?.requestId).toBe('remote')
+    onEvent({ payload: { answers: { q1: 'BLUE' }, request_id: 'remote' }, type: 'clarify.resolved' } as any)
+    onEvent({ payload: { answers: { q1: 'BLUE' }, request_id: 'remote' }, type: 'clarify.resolved' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'remote-tool' }, type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify).toBeNull()
+    expect(appended.filter(msg => msg.text.includes('BLUE'))).toHaveLength(1)
+    expect(appended.some(msg => msg.text.includes('timed out'))).toBe(false)
+  })
+
   it('seeds locked answers from a reconnect-replay batch clarify.request', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 

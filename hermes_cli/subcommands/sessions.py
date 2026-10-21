@@ -19,6 +19,11 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
+    questions = sessions_subparsers.add_parser("questions", help="Inspect durable cross-surface questions")
+    questions.add_argument("session_id", help="Exact stored session ID")
+    questions.add_argument("--recover", metavar="REQUEST_ID", help="Record reviewed recovery after the original process exited")
+    questions.add_argument("--effects-reviewed", metavar="EVIDENCE", help="What confirmed the previous external effects; required for recovery")
+
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")

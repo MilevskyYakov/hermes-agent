@@ -51,7 +51,7 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, getOverlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
@@ -693,7 +693,7 @@ export function useMainApp(gw: GatewayClient) {
       patchTurnState({ turnTrail: turnController.turnTools })
 
       rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
-        if (!r) {
+        if (!r || getOverlayState().clarify?.requestId !== clarify.requestId) {
           return
         }
 
@@ -736,16 +736,16 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      rpc<ClarifyRespondResponse & { remaining?: string[] }>('clarify.respond', {
+      rpc<ClarifyRespondResponse & { answers?: Record<string, string>; remaining?: string[] }>('clarify.respond', {
         answer,
         question_id: qid,
         request_id: clarify.requestId
       }).then(r => {
-        if (!r) {
+        if (!r || getOverlayState().clarify?.requestId !== clarify.requestId) {
           return
         }
 
-        const answers = { ...(clarify.answers ?? {}), [qid]: answer }
+        const answers = r.answers ?? { ...(getOverlayState().clarify?.answers ?? {}), [qid]: answer }
 
         if ((r.remaining ?? []).length > 0) {
           patchOverlayState({ clarify: { ...clarify, answers } })

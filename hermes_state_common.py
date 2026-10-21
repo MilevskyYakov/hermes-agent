@@ -466,6 +466,31 @@ CREATE TABLE IF NOT EXISTS gateway_heartbeats (
     host TEXT NOT NULL DEFAULT ''
 );
 
+-- Optional cross-surface clarify mailbox. Decisions are retained; this never owns an agent turn.
+CREATE TABLE IF NOT EXISTS question_relay (
+    request_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    owner TEXT NOT NULL,
+    owner_process TEXT NOT NULL DEFAULT '{}',
+    task TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL DEFAULT '',
+    questions TEXT NOT NULL,
+    answers TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'waiting',
+    delivery TEXT NOT NULL DEFAULT 'queued',
+    message_id TEXT,
+    revision INTEGER NOT NULL DEFAULT 0,
+    delivered_revision INTEGER NOT NULL DEFAULT -1,
+    updated_at REAL NOT NULL,
+    owner_seen REAL NOT NULL,
+    result TEXT NOT NULL DEFAULT '',
+    recovery_note TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_question_relay_message
+    ON question_relay(chat_id, thread_id, message_id);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,

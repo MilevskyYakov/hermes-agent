@@ -315,6 +315,10 @@ class CLIChatTurnMixin:
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
         try:
+            from hermes_cli.question_relay import resume_note
+            if note := resume_note(self):
+                agent_message = _prepend_note_to_message(agent_message, note)
+                _persist_clean_user_message = message
             turn.result = self.agent.run_conversation(
                 user_message=agent_message,
                 conversation_history=self.conversation_history[:-1],  # exclude the message just staged
@@ -337,6 +341,8 @@ class CLIChatTurnMixin:
                 "completed": False, "failed": True, "error": _summary,
             }
         finally:
+            from hermes_cli.question_relay import finish
+            finish(self, turn.result)
             if _one_turn_model_restore:
                 self._restore_model_runtime_snapshot(_one_turn_model_restore)
             # Credit notices paint cleanly above the prompt here, not behind streamed output.
@@ -371,6 +377,8 @@ class CLIChatTurnMixin:
 
         interrupt_msg = None
         while agent_thread.is_alive():
+            from hermes_cli.question_relay import tick
+            tick(self)
             try:
                 interrupt_msg = self._interrupt_queue.get(timeout=0.1)
             except queue.Empty:
