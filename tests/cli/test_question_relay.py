@@ -1,11 +1,14 @@
 """Classic CLI/Orca callback and real turn runner: one synthetic effect, no model/network."""
 import asyncio
 import queue
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import yaml
+import pytest
 
 from cli import HermesCLI
 from hermes_constants import get_hermes_home
@@ -18,13 +21,21 @@ from gateway.session import SessionSource
 from tests.tui_gateway.test_question_relay import Transport
 
 
-def test_classic_cli_real_turn_both_directions_and_duplicate(monkeypatch):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_classic_cli_real_turn_both_directions_and_duplicate(monkeypatch, tmp_path, automatic):
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text(yaml.safe_dump({"question_relay": {"sessions": {
-        "classic": {"task": "synthetic classic", "chat_id": "101", "user_id": "101"}}}}))
+    project = tmp_path / "synthetic-project"
+    subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+    config = {"question_relay": {"sessions": {
+        "classic": {"task": "synthetic classic", "chat_id": "101", "user_id": "101"}}}}
+    if automatic:
+        config = {"question_relay": {"auto": {"enabled": True,
+            "since": datetime.now(timezone.utc).isoformat(), "chat_id": "101", "user_id": "101"}}}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
     db = acquire()
-    db.create_session("classic", "cli")
+    db.create_session("classic", "cli", cwd=str(project))
+    db.set_session_title("classic", "Synthetic colour task")
     store = RelayStore(db)
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "classic"
@@ -54,9 +65,13 @@ def test_classic_cli_real_turn_both_directions_and_duplicate(monkeypatch):
         turn = SimpleNamespace(voice_prefix="", stream_callback=None, result=None)
         running = pool.submit(cli._chat_run_agent, turn, "Synthetic task")
         ready.get(timeout=5)
+        assert store.for_session("classic"), "new project session must route without a binding"
         rid = store.for_session("classic")[-1]["request_id"]
-        asyncio.run(deliver_pending(store, transport))
+        asyncio.run(deliver_pending(store, transport, config))
         mid = store.get(rid)["message_id"]
+        if automatic:
+            assert "synthetic-project" in transport.messages[mid]
+            assert "Synthetic colour task" in transport.messages[mid]
         event = MessageEvent(text="BLUE", source=SessionSource(platform=Platform.TELEGRAM, chat_id="101", user_id="101"),
                              reply_to_message_id=mid, reply_to_text=transport.messages[mid], reply_to_is_own_message=True)
         assert "accepted" in asyncio.run(handle_reply(event))
@@ -67,7 +82,7 @@ def test_classic_cli_real_turn_both_directions_and_duplicate(monkeypatch):
         cli._persist_prompt_summary.assert_any_call("?", "Clarify", "Colour?", "BLUE")
         assert "duplicate" in asyncio.run(handle_reply(event))
         assert effects == ["BLUE"]
-        asyncio.run(deliver_pending(store, transport))
+        asyncio.run(deliver_pending(store, transport, config))
         assert "DONE BLUE" in transport.messages[mid]
         while not ready.empty():
             ready.get_nowait()
@@ -78,7 +93,7 @@ def test_classic_cli_real_turn_both_directions_and_duplicate(monkeypatch):
         cli._clarify_batch_lock(state, "GREEN")  # Real keyboard submission handler.
         running.result(timeout=5)
         assert effects == ["BLUE", "GREEN"]
-        asyncio.run(deliver_pending(store, transport))
+        asyncio.run(deliver_pending(store, transport, config))
         assert any("DONE GREEN" in text for text in transport.messages.values())
     assert cli.agent.run_conversation.call_count == 2
     db.close()

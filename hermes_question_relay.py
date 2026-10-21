@@ -5,22 +5,50 @@ never retried as an agent turn: exactly-once arbitrary external effects cannot b
 from a saved answer. Recovery must reconcile the original transcript first.
 """
 import json
+import logging
 import os
 import re
 import socket
 import time
+from datetime import datetime
+from pathlib import Path
 
 
-def route_for(config, session_id):
-    relay = config.get("question_relay", {})
-    if not isinstance(relay, dict):
-        raise ValueError("question_relay must be a mapping")
-    routes = relay.get("sessions", {})
-    if not isinstance(routes, dict):
-        raise ValueError("question_relay.sessions must be a mapping")
-    route = routes.get(session_id)
-    if route is None:
+def load_relay_config():
+    """Use effective profile config, but never let last-known-good YAML renew a relay grant."""
+    import yaml
+    from hermes_cli.config import load_config_readonly, read_user_config_raw, get_active_config_parse_failure
+    try:
+        # Syntax/consent diagnostic only; behavioral values still use the shared effective loader.
+        current = read_user_config_raw()
+    except (OSError, yaml.YAMLError):
+        logging.getLogger(__name__).warning("Question relay configuration unreadable; remote route unavailable")
+        return {"question_relay": {"sessions": {}}}
+    if "question_relay" not in current:
+        return {}
+    config = load_config_readonly()
+    return {} if get_active_config_parse_failure() else config
+
+
+def route_for(config, session_id, db=None):
+    """Explicit bindings win, including null (opt out). Auto routes need durable provenance."""
+    try:
+        relay = config.get("question_relay", {})
+        if not isinstance(relay, dict):
+            raise ValueError("question_relay must be a mapping")
+        routes = relay.get("sessions", {})
+        if not isinstance(routes, dict):
+            raise ValueError("question_relay.sessions must be a mapping")
+        if session_id in routes:
+            return _validate_route(routes[session_id]) if routes[session_id] is not None else None
+        return _automatic_route(relay.get("auto", {}), session_id, db)
+    except (ValueError, TypeError):
+        # Do not log recipient/config values. Invalid setup must leave local clarify usable.
+        logging.getLogger(__name__).warning("Question relay configuration invalid; remote route unavailable")
         return None
+
+
+def _validate_route(route):
     if not isinstance(route, dict) or not isinstance(route.get("task"), str) or not route["task"].strip():
         raise ValueError("question relay requires an explicit task")
     # Telegram numeric identities, never usernames, wildcard recipients or a home-channel fallback.
@@ -31,6 +59,76 @@ def route_for(config, session_id):
     if thread and not re.fullmatch(r"[1-9][0-9]*", thread):
         raise ValueError("invalid question relay thread_id")
     return {"task": route["task"], "chat_id": str(route["chat_id"]), "user_id": str(route["user_id"]), "thread_id": thread}
+
+
+def _automatic_route(auto, session_id, db):
+    if not isinstance(auto, dict):
+        raise ValueError("question_relay.auto must be a mapping")
+    if auto.get("enabled") is not True or db is None:
+        return None
+    since = datetime.fromisoformat(auto.get("since", ""))
+    if since.tzinfo is None:
+        raise ValueError("question_relay.auto.since requires a timezone")
+    recipient = _validate_route({**auto, "task": "automatic"})
+    if recipient["chat_id"] != recipient["user_id"] or recipient["thread_id"]:
+        raise ValueError("automatic question relay requires the human's private chat")
+    if db._own_profile_name() != "default":
+        return None
+    session = db.get_session(session_id)
+    ancestor = session
+    seen = set()
+    while ancestor:
+        if (ancestor["id"] in seen or ancestor.get("profile_name") != "default"
+                or ancestor.get("source") not in {"cli", "tui", "desktop"}
+                or ancestor.get("started_at", 0) < since.timestamp()
+                or ancestor.get("hidden")):
+            return None
+        seen.add(ancestor["id"])
+        metadata = json.loads(ancestor.get("model_config") or "{}")
+        if not isinstance(metadata, dict):
+            return None
+        if metadata.get("_delegate_from"):
+            return None
+        parent = ancestor.get("parent_session_id")
+        if not parent or metadata.get("_branched_from") == parent or metadata.get("_reset_from") == parent:
+            break
+        ancestor = db.get_session(parent)
+        if ancestor is None:
+            return None
+    if not session or not session.get("cwd"):
+        return None
+    project = _project_label(db, session["cwd"])
+    if not project:
+        return None
+    # Freeze the display label at the first question. Later title changes must not revoke
+    # a pending decision; exact session/request IDs, not these labels, remain the identity.
+    previous = db._read_one("SELECT task FROM question_relay WHERE session_id = ? ORDER BY updated_at LIMIT 1", (session_id,))
+    if previous:
+        return {**recipient, "task": previous["task"]}
+    title = session.get("title") or f"Session {session_id}"
+    return {**recipient, "task": f"{project} — {title}"}
+
+
+def _project_label(db, cwd):
+    from tui_gateway.git_probe import common_repo_root, repo_root
+    root = common_repo_root(cwd)
+    if root:
+        checkout = repo_root(cwd)
+        return Path(root).name + (f" / {Path(checkout).name}" if checkout != root else "")
+    # Reuse already registered non-Git projects without creating/migrating a registry.
+    import sqlite3
+    from contextlib import closing
+    from hermes_cli.projects_db import project_for_path
+    path = Path(db.db_path).resolve().parent / "projects.db"
+    if path.is_file() and Path(cwd).is_dir():
+        try:
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                project = project_for_path(conn, cwd)
+                return project.name if project else None
+        except sqlite3.Error:
+            logging.getLogger(__name__).warning("Question relay project registry unavailable; no automatic route")
+    return None
 
 
 def _decode(row):
@@ -56,9 +154,7 @@ class RelayStore:
             "SELECT * FROM question_relay WHERE session_id = ? ORDER BY updated_at", (session_id,))]
 
     def create(self, request_id, session_id, owner, route, questions):
-        route = route_for({"question_relay": {"sessions": {session_id: route}}}, session_id)
-        if route is None:
-            raise ValueError("explicit question relay route required")
+        route = _validate_route(route)
         if not request_id or not session_id or not owner or not questions:
             raise ValueError("request, session, owner and questions required")
         ids = [q["qid"] for q in questions]
@@ -150,7 +246,8 @@ class RelayStore:
     def pending_delivery(self):
         return [_decode(r) for r in self.db._read_all(
             "SELECT * FROM question_relay WHERE delivery = 'queued' OR "
-            "(delivery = 'sent' AND delivered_revision < revision) ORDER BY updated_at LIMIT 50")]
+            "(delivery = 'sent' AND (delivered_revision < revision OR status IN "
+            "('waiting', 'answered', 'consumed', 'reviewed'))) ORDER BY updated_at")]
 
     def cancel_delivery(self, request_id):
         # Disable delivery without deleting the address/message needed to reject a late reply.

@@ -2010,8 +2010,9 @@ DEFAULT_CONFIG = {
     },
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
-    # Explicit stored-session routes only; no implicit home channel or last active session.
-    "question_relay": {"sessions": {}},
+    # Explicit routes win; auto requires a private recipient and an activation boundary.
+    # Never falls back to a home channel or the last active session.
+    "question_relay": {"sessions": {}, "auto": {"enabled": False}},
     "sessions": {
         # Prune ENDED sessions inactive for retention_days (activity = latest message, else
         # creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions

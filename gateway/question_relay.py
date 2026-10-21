@@ -4,14 +4,15 @@ import logging
 
 from gateway.config import Platform
 from gateway.session import SessionSource
-from hermes_question_relay import RelayStore, route_for
+from hermes_question_relay import RelayStore, route_for, load_relay_config
 
 logger = logging.getLogger(__name__)
 PREFIX = "[Hermes question "
 
 
 def render(row):
-    parts = [f"{PREFIX}{row['request_id']}] {row['task']}", f"State: {row['status']}"]
+    parts = [f"{PREFIX}{row['request_id']}] {row['task']}",
+             f"Session: {row['session_id']}", f"State: {row['status']}"]
     for q in row["questions"]:
         parts.append(f"{q['qid']}: {q['question']}")
         parts.extend(f"  {choice}" for choice in q.get("choices") or [])
@@ -34,10 +35,12 @@ async def deliver_pending(store, adapter, config=None):
     """A send with an unknown outcome is never retried; edits are idempotent."""
     for row in await asyncio.to_thread(store.pending_delivery):
         request_id = row["request_id"]
-        if config is not None and route_for(config, row["session_id"]) != {k: row[k] for k in ("task", "chat_id", "user_id", "thread_id")}:
+        if config is not None and route_for(config, row["session_id"], store.db) != {k: row[k] for k in ("task", "chat_id", "user_id", "thread_id")}:
             await asyncio.to_thread(store.stop_session, row["session_id"])
             await asyncio.to_thread(store.cancel_delivery, request_id)
             continue
+        if row["delivery"] == "sent" and row["delivered_revision"] >= row["revision"]:
+            continue  # Revalidate waiting routes without editing an unchanged card.
         metadata = {"_question_relay": True, "notify": True}
         if row["thread_id"]:
             metadata["thread_id"] = row["thread_id"]
@@ -98,14 +101,13 @@ async def handle_reply(event):
     if event.internal or not event.allow_gateway_control:
         return "Question reply rejected: user control is required."
     def resolve():
-        from hermes_cli.config import load_config_readonly
         store = _store()
         try:
             source = event.source
             row = store.find_reply(source.chat_id, source.thread_id, event.reply_to_message_id)
             if not row or str(source.user_id) != row["user_id"]:
                 return "unknown or unauthorized question"
-            current = route_for(load_config_readonly(), row["session_id"])
+            current = route_for(load_relay_config(), row["session_id"], store.db)
             expected = {k: row[k] for k in ("task", "chat_id", "user_id", "thread_id")}
             if current != expected:
                 store.stop_session(row["session_id"])
@@ -133,10 +135,8 @@ async def watch(runner):
     while runner._running:
         for profile_name, profile_home in _handoff_watch_scopes(runner):
             async with scope(profile_home):
-                from hermes_cli.config import load_config_readonly
-                config = await asyncio.to_thread(load_config_readonly)
-                if not (config.get("question_relay") or {}).get("sessions"):
-                    continue
+                config = await asyncio.to_thread(load_relay_config)
+                # Even an empty/disabled config must reconcile previously queued questions.
                 store = await asyncio.to_thread(_store)
                 try:
                     source = SessionSource(platform=Platform.TELEGRAM, chat_id="", profile=profile_name)

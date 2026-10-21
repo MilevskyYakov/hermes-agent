@@ -2,12 +2,15 @@
 import asyncio
 import json
 import queue
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import yaml
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
@@ -38,7 +41,8 @@ class Transport(BasePlatformAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
-def test_tui_telegram_questions_share_one_owner_and_stop(monkeypatch, tmp_path):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_tui_telegram_questions_share_one_owner_and_stop(monkeypatch, tmp_path, automatic):
     from hermes_constants import get_hermes_home
     from hermes_state_registry import acquire
     from hermes_question_relay import RelayStore
@@ -50,12 +54,19 @@ def test_tui_telegram_questions_share_one_owner_and_stop(monkeypatch, tmp_path):
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     route = {"task": "synthetic", "chat_id": "101", "user_id": "101"}
-    (home / "config.yaml").write_text(yaml.safe_dump({"question_relay": {"sessions": {"alpha": route, "beta": route}}}))
+    project = tmp_path / "synthetic-project"
+    subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+    config = {"question_relay": {"sessions": {"alpha": route, "beta": route}}}
+    if automatic:
+        config = {"question_relay": {"auto": {"enabled": True,
+            "since": datetime.now(timezone.utc).isoformat(), "chat_id": "101", "user_id": "101"}}}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "101")
     db = acquire()
     store = RelayStore(db)
     for sid in ("alpha", "beta"):
-        db.create_session(sid, "tui")
+        db.create_session(sid, "tui", cwd=str(project))
+        db.set_session_title(sid, "Synthetic task " + sid)
     monkeypatch.setattr(server, "_db", db)
     events = queue.Queue()
     monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.put((event, sid, payload)))
@@ -84,7 +95,7 @@ def test_tui_telegram_questions_share_one_owner_and_stop(monkeypatch, tmp_path):
         alpha = pool.submit(server._clarify_block, "alpha", "Colour?", ["BLUE", "RED"])
         beta = pool.submit(server._clarify_block, "beta", "Shape?", ["ROUND", "SQUARE"])
         requests = dict([next_question(), next_question()])
-        asyncio.run(deliver_pending(store, transport))
+        asyncio.run(deliver_pending(store, transport, config))
         am = store.get(requests["alpha"])["message_id"]
         bm = store.get(requests["beta"])["message_id"]
         assert "unauthorized" in asyncio.run(handle_reply(event(am, "RED", user="999")))
@@ -103,7 +114,7 @@ def test_tui_telegram_questions_share_one_owner_and_stop(monkeypatch, tmp_path):
         assert beta.result(timeout=5) == "ROUND"
         assert "conflict" in asyncio.run(runner._handle_message(event(am, "RED")))
         finish(sessions["alpha"], "DONE BLUE")
-        asyncio.run(deliver_pending(store, transport))
+        asyncio.run(deliver_pending(store, transport, config))
         assert "DONE BLUE" in transport.messages[am]
         assert "Decision: ROUND" in transport.messages[bm]
         # A stop targeted at beta never interrupts alpha or creates a new turn.
@@ -122,8 +133,8 @@ def test_tui_telegram_questions_share_one_owner_and_stop(monkeypatch, tmp_path):
     db.close()
 
 
-def test_batch_revocation_and_recovery_fence(monkeypatch):
-    import pytest
+@pytest.mark.parametrize("automatic", [False, True])
+def test_batch_revocation_and_recovery_fence(monkeypatch, tmp_path, automatic):
     from hermes_constants import get_hermes_home
     from hermes_state_registry import acquire
     from hermes_question_relay import RelayStore
@@ -134,9 +145,15 @@ def test_batch_revocation_and_recovery_fence(monkeypatch):
     home.mkdir(parents=True, exist_ok=True)
     route = {"task": "batch", "chat_id": "101", "user_id": "101"}
     config = home / "config.yaml"
-    config.write_text(yaml.safe_dump({"question_relay": {"sessions": {"batch": route}}}))
+    project = tmp_path / "project"
+    subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+    config_data = {"question_relay": {"sessions": {"batch": route}}}
+    if automatic:
+        config_data = {"question_relay": {"auto": {"enabled": True,
+            "since": datetime.now(timezone.utc).isoformat(), "chat_id": "101", "user_id": "101"}}}
+    config.write_text(yaml.safe_dump(config_data))
     db = acquire()
-    db.create_session("batch", "tui")
+    db.create_session("batch", "tui", cwd=str(project))
     store = RelayStore(db)
     monkeypatch.setattr(server, "_db", db)
     session = {"session_key": "batch", "profile_home": str(home), "history_lock": threading.RLock(), "agent": None, "running": True}

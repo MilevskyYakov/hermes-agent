@@ -9,17 +9,55 @@ This optional route connects a **waiting `clarify` question** in a classic CLI/O
 
 The existing project process remains the sole executor. Telegram transports decisions through the same profile's `state.db`; it never starts another agent. Model, provider, tool approvals, task scope and existing gateway authorization are unchanged. This is not a route for passwords, sudo prompts or dangerous-command approval cards.
 
-## Enable only for a named session
+## Prerequisites
 
 Prerequisites:
 
 - The approved build must be used by **both** the project process and messaging gateway. An edited checkout is not an installed build.
 - Both processes must use the same profile home and state database, on the same awake computer.
 - Telegram must already be configured and the human sender authorized through normal gateway policy.
-- Get the exact persisted session ID from the project session information/history. A displayed task title or a session ID written in message text is not a binding. Do not use a shortened ID.
+- For an explicit binding, get the exact persisted session ID from project session information/history. A displayed task title or a session ID written in message text is not a binding. Do not use a shortened ID. The automatic route below does not require this step.
 - Agree on the exact private test chat or existing topic before live testing. A named worktree does not isolate Telegram data. Do not create or change credentials as part of this setup.
 
-With explicit configuration permission, add this section to that profile's existing `config.yaml`, preserving other settings:
+## Automatically route new projects in the default profile
+
+With separate configuration/rollout permission, configure **one private recipient** in the default profile's existing `config.yaml`. No project allowlist or per-session binding is needed:
+
+```yaml
+question_relay:
+  auto:
+    enabled: true
+    since: "REPLACE_WITH_ACTIVATION_TIME_WITH_TIMEZONE"
+    chat_id: "REPLACE_WITH_NUMERIC_HUMAN_ID"
+    user_id: "REPLACE_WITH_THE_SAME_NUMERIC_HUMAN_ID"
+  sessions: {}
+```
+
+The placeholders deliberately fail closed. At activation, obtain the current UTC boundary with:
+
+```sh
+python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())'
+```
+
+Set the quoted `since` value once, immediately before opening new project sessions. Keep it unchanged across gateway restarts; never backdate it to enroll history. This explicit activation boundary uses the existing session creation timestamps, without a second registration database or writes to every session binding. Restoring an old session does not change its creation timestamp. A draft gets its durable identity on its first actual prompt.
+
+Automatic eligibility requires all of the following:
+
+- The database belongs to the default profile **and** the stored session identifies that profile. Copying this section to another profile does not opt that profile in.
+- The durable source is classic `cli`, `tui` (including Orca terminal launches), or `desktop`. Hidden sessions, delegated agents, messaging sessions, cron and unknown sources are excluded.
+- The stored creation time is at or after `since`. Compression continuations retain their original lineage boundary, so compressing an older task does not enroll it. A deliberate new branch/reset is a new task boundary.
+- The session's own persisted workspace resolves to a Git repository/worktree or an already registered first-class Hermes Project. A desktop launch directory is not a chosen workspace. Missing/unknown project provenance never falls back to the process cwd or a project name in conversation text.
+- The recipient is a positive numeric private-chat identity equal to the authorized human's user ID, with no topic. Group recipients and mismatched IDs are rejected. Existing gateway sender authorization still applies; this setting does not change it.
+
+The card includes the project/worktree, stored task title (or exact session ID when untitled), exact session ID and request ID. The label is frozen at the first question, so a title update cannot revoke a pending decision. Only `clarify` questions, their decisions and associated final results are sent; normal messages and logs are not mirrored.
+
+An explicit `sessions` entry takes priority, even when automatic routing is enabled. Set `sessions.EXACT_STORED_SESSION_ID: null` to exclude one session. An invalid explicit entry does not fall through to auto. Removing an override returns an eligible session to automatic selection; use `null` to revoke it instead. Removing/changing the actual selected recipient stops existing questions rather than sending their data elsewhere.
+
+Invalid configuration or missing provenance leaves the native local clarification path available and displays that no authorized remote route exists. Once a question has been registered, loss of its route stops the waiter instead of treating missing permission as an answer.
+
+## Explicit session bindings (compatible with existing setup)
+
+With explicit configuration permission, add this section to that profile's existing `config.yaml`, preserving other settings (including `auto`, if used):
 
 ```yaml
 question_relay:
@@ -33,7 +71,7 @@ question_relay:
 
 The placeholders deliberately fail validation. Use numeric identities, not usernames. Omit `thread_id` only for the agreed unthreaded destination. There is no default/home-channel fallback. Configuration is read again while waiting and before accepting an answer. Other sessions are not opted in.
 
-The current binding is exact, not a task-discovery service. Starting/resetting a session or rotating to a new stored CLI session ID requires checking the new identity before authorizing its route. Do not copy a binding to a different task implicitly.
+An explicit binding is exact, not a task-discovery service. Without automatic routing, starting/resetting a session or rotating to a new stored CLI session ID requires checking the new identity before authorizing its route. Do not copy a binding to a different task implicitly.
 
 ## Answer and stop
 
@@ -44,7 +82,9 @@ The current binding is exact, not a task-discovery service. Starting/resetting a
 5. The original blocked callback returns the decision once. No copied prompt, additional “go”, handoff, model call or second executor is needed to deliver it.
 6. The same card is edited with the saved decision, consumption state and final result. The project displays the saved decision and its ordinary final response. Technical logs remain local.
 
-Reply `/stop` or `/revoke` **to the specific card** to stop that task. Normal project interrupt/cancel also stops its relay. Removing/changing the configured binding revokes it. Revocation does not authorize sending old task data to a new recipient.
+Reply `/stop` or `/revoke` **to the specific card** to stop that task. Normal project interrupt/cancel also stops its relay. Removing/changing the selected route revokes it; when auto is enabled, use an explicit `null` to opt a particular session out. Revocation does not authorize sending old task data to a new recipient.
+
+To disable automatic routing, set `question_relay.auto.enabled: false` (or remove `auto`). This prevents new automatic questions and revokes already waiting/answered/consumed automatic questions when the owner or gateway next reconciles state. It requests stop, not rollback of an action already in progress. Explicit bindings continue to work. History and recorded answers remain intact. Re-enabling with the original `since` does **not** make a stopped or already consumed decision executable again; unresolved stopped work needs the reviewed-recovery procedure below. To exclude sessions created during a disabled interval, advance `since` at reactivation; recovery of older unresolved questions then requires an explicitly authorized exact binding.
 
 Stop prevents continuation through the waiting question and requests the native hard interrupt for a running owner. An already-started external action may finish; do not interpret “stop requested” as proof of rollback. Stopped tasks remain fenced until reviewed recovery. A bare `/stop` outside the card retains its ordinary Telegram meaning.
 
@@ -100,6 +140,7 @@ Local tests use temporary databases, real CLI/TUI callback and gateway dispatch 
 ```sh
 scripts/run_tests.sh -j 4 \
   tests/test_question_relay.py \
+  tests/test_question_relay_auto.py \
   tests/test_question_relay_recovery.py \
   tests/cli/test_question_relay.py \
   tests/tui_gateway/test_question_relay.py \
@@ -121,7 +162,7 @@ npm run typecheck --workspace apps/desktop
 
 Missing dependencies are setup blockers, not permission to install packages or substitute mocks for the required suite. Telegram decision cards are sent and edited as bounded plain text; an oversized or rejected edit remains unconfirmed, never a silently shortened success.
 
-A separately approved pilot must exercise the **actual Orca launch path**, with synthetic tasks and the accepted model/provider:
+The original explicit-route pilot exercised the **actual Orca launch path**, with synthetic tasks and the accepted model/provider:
 
 - Telegram reply produces `DONE BLUE` in the original task once, and the Telegram card shows the same result.
 - A terminal answer settles the Telegram card; no additional “go” or manual injection occurs.
@@ -129,6 +170,8 @@ A separately approved pilot must exercise the **actual Orca launch path**, with 
 - Ordinary Telegram/project work remains intact, and the user confirms the controls are convenient.
 
 Exercise wrong sender/chat/topic, configuration revocation, network failures, gateway loss and owner recovery in the isolated suite above. Do not inject failures into a working gateway or unrelated sessions. Combine that evidence with the real positive Orca/Telegram pilot; label transport simulation separately rather than calling it a live Telegram failure test.
+
+For the automatic-route extension, do not repeat the large two-session live pilot. After separate rollout permission, open **one new project session without a manual binding**, ask one ordinary `clarify`, reply in Telegram, and verify that the original terminal/Orca owner continues once and the same card shows its result. Concurrency, both UI adapters, new Git worktrees, profile exclusion, malformed configuration, disabling and recovery are covered by the isolated suite; these are not live Telegram claims.
 
 Do not stop a working gateway, send test messages to existing conversations, change profiles or install this build without explicit permission for those exact actions.
 
@@ -138,6 +181,6 @@ Prepare a versioned artifact from the tested source, record the current project/
 
 Pilot only the agreed synthetic sessions. Keep the previous runtime available. Activate both sides on the same approved version; record their actual versions and verify the exact recipients and results independently. Expand only after the live acceptance above.
 
-To disable safely, stop task-owned work, reconcile already-started effects, and remove only the approved session bindings. Preserve the `question_relay` table and transcript. The additive table is inert to older code; do not delete it or restore an old whole database merely to roll back code. Do not resume an unresolved task on an older runtime that lacks the recovery fence. Switching launch targets, restarting processes and restoring data retain their own approval gates.
+To disable safely, stop task-owned work, reconcile already-started effects, disable `auto` and remove only the approved explicit bindings. Preserve the `question_relay` table and transcript. The automatic extension adds no database schema or dependencies. To return an unresolved automatic session to the previous explicit-only build, review its state and authorize an exact binding matching the saved task/recipient before resuming; do not infer that a saved answer is safe to replay. Do not delete the table or restore an old whole database merely to roll back code. Do not resume an unresolved task on an older runtime that lacks the recovery fence. Switching launch targets, restarting processes and restoring data retain their own approval gates.
 
-Source task: [GERDA2.0 #588](https://github.com/MilevskyYakov/GERDA2.0/issues/588). This bounded route does not complete its parent program or authorize issue closeout.
+Source tasks: [GERDA2.0 #588](https://github.com/MilevskyYakov/GERDA2.0/issues/588) (addressed relay), [#592](https://github.com/MilevskyYakov/GERDA2.0/issues/592) (new-project automatic route). Code readiness is not runtime activation; these bounded results do not complete their parent program or authorize issue closeout.

@@ -4,17 +4,19 @@ import threading
 import time
 import uuid
 
-from hermes_question_relay import RelayStore, route_for
+from hermes_question_relay import RelayStore, route_for, load_relay_config
 
 _active = {}
 _lock = threading.RLock()
 
 
 def config_for(session):
-    from pathlib import Path
-    from hermes_constants import get_hermes_home
-    from hermes_cli.config import read_user_config_raw
-    return read_user_config_raw(Path(session.get("profile_home") or get_hermes_home()) / "config.yaml")
+    from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
+    token = set_hermes_home_override(session.get("profile_home") or get_hermes_home())
+    try:
+        return load_relay_config()
+    finally:
+        reset_hermes_home_override(token)
 
 
 def block(sid, payload, timeout, batch_qids=None):
@@ -23,10 +25,14 @@ def block(sid, payload, timeout, batch_qids=None):
     if session is None:
         return False, ""
     key = session.get("session_key")
-    route = route_for(config_for(session), key)
-    if route is None:
-        return False, ""
     with server._session_db(session) as db:
+        config = config_for(session)
+        route = route_for(config, key, db)
+        if route is None:
+            if config.get("question_relay"):
+                server._emit("status.update", sid, {"kind": "info", "text":
+                    "Question relay: no authorized route for this session; using local clarification."})
+            return False, ""
         if db is None:
             raise RuntimeError("Question relay requires the original session database")
         store = RelayStore(db)
@@ -51,7 +57,7 @@ def block(sid, payload, timeout, batch_qids=None):
             while True:
                 if event.is_set() or session.get("_turn_cancel_requested"):
                     store.stop_session(key)
-                if route_for(config_for(session), key) != route:
+                if route_for(config_for(session), key, db) != route:
                     store.stop_session(key)
                 row = store.get(rid)
                 if row is None:
@@ -143,7 +149,7 @@ def tick(sid, session):
             raise RuntimeError("Question relay state unavailable")
         store = RelayStore(db)
         rows = store.for_session(session["session_key"])
-        route = route_for(config_for(session), session["session_key"])
+        route = route_for(config_for(session), session["session_key"], db)
         active = [r for r in rows if r["owner"] == session.get("_question_relay_owner") and r["status"] != "complete"]
         if any(r["status"] == "stopped" or route != {k: r[k] for k in ("task", "chat_id", "user_id", "thread_id")} for r in active):
             store.stop_session(session["session_key"])
@@ -179,11 +185,15 @@ def resume_note(session):
     from tui_gateway import server
     with server._session_db(session) as db:
         if db is None:
-            if route_for(config_for(session), session.get("session_key")) is not None:
+            config = config_for(session)
+            relay = config.get("question_relay")
+            auto = relay.get("auto") if isinstance(relay, dict) else None
+            if (route_for(config, session.get("session_key")) is not None
+                    or isinstance(auto, dict) and auto.get("enabled") is True):
                 raise RuntimeError("Question relay state unavailable; cannot safely resume")
             return ""
         owner = session.setdefault("_question_relay_owner", uuid.uuid4().hex)
-        route = route_for(config_for(session), session.get("session_key"))
+        route = route_for(config_for(session), session.get("session_key"), db)
         note = RelayStore(db).resume_note(session.get("session_key"), owner, route)
         if note:
             session["_question_relay_used"] = True

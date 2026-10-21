@@ -2,22 +2,32 @@
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 import pytest
+import yaml
 
 from hermes_constants import get_hermes_home
 from hermes_state_registry import acquire
-from hermes_question_relay import RelayStore
+from hermes_question_relay import RelayStore, route_for
 
 
 @pytest.mark.parametrize("failure", ["offline", "uncertain_send", "uncertain_edit"])
-def test_gateway_loss_never_resends_or_invents_execution(tmp_path, failure):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_gateway_loss_never_resends_or_invents_execution(tmp_path, failure, automatic):
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
+    project = tmp_path / "project"
+    subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+    config = {"question_relay": {"sessions": {"original": {"task": "restart", "chat_id": "101", "user_id": "101"}}}}
+    if automatic:
+        config = {"question_relay": {"auto": {"enabled": True,
+            "since": datetime.now(timezone.utc).isoformat(), "chat_id": "101", "user_id": "101"}}}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
     db = acquire()
-    db.create_session("original", "cli")
+    db.create_session("original", "cli", cwd=str(project))
     store = RelayStore(db)
-    store.create("question", "original", "owner", {"task": "restart", "chat_id": "101", "user_id": "101"},
+    store.create("question", "original", "owner", route_for(config, "original", db),
                  [{"qid": "q1", "question": "Colour?", "choices": ["BLUE", "GREEN"]}])
     mailbox = tmp_path / "mailbox.json"
     mailbox.write_text(json.dumps({"sends": 0, "edits": 0}))
@@ -27,6 +37,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from hermes_state import SessionDB
 from hermes_question_relay import RelayStore
+from hermes_cli.config import load_config_readonly
 from gateway.question_relay import deliver_pending
 path, mode = Path(sys.argv[1]), sys.argv[2]
 class Transport:
@@ -48,7 +59,7 @@ class Transport:
 if mode == 'offline':
     os._exit(23)
 db = SessionDB()
-asyncio.run(deliver_pending(RelayStore(db), Transport()))
+asyncio.run(deliver_pending(RelayStore(db), Transport(), load_config_readonly()))
 db.close()
 '''
     def run(mode):
