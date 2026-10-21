@@ -1307,7 +1307,7 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
-def _create_titled_session(title: str) -> Optional[str]:
+def _create_titled_session(title: str, *, source: str = "cli") -> Optional[str]:
     """Create a fresh titled session (``chat -c <title> --create-if-missing``).
 
     Same timestamp+uuid id shape the CLI uses; the title is recorded with
@@ -1325,7 +1325,9 @@ def _create_titled_session(title: str) -> Optional[str]:
 
         new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
         db = SessionDB()
-        db.create_session(new_session_id, source="cli")
+        # This row is resumed immediately; agent init cannot supply its launch provenance later.
+        local = (os.environ.get("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
+        db.create_session(new_session_id, source=source, cwd=os.getcwd() if local else None)
         db.set_session_title(new_session_id, title)
         return new_session_id
     except Exception:
@@ -1364,7 +1366,8 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 # a quiet send to a not-yet-existing session silently no-ops.
                 # --create-if-missing: no session matches the title — create a new session with that title
                 # and proceed. See #86794.
-                new_sid = _create_titled_session(continue_val)
+                source = (getattr(args, "source", None) or os.environ.get("HERMES_SESSION_SOURCE", "")).strip()
+                new_sid = _create_titled_session(continue_val, source=source or ("tui" if use_tui else "cli"))
                 if new_sid:
                     args.resume = new_sid
                 else:

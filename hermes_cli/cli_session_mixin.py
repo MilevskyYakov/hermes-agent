@@ -561,10 +561,14 @@ class CLISessionMixin:
 
             if self._session_db:
                 with contextlib.suppress(Exception):
+                    from run_agent import _launch_cwd_for_session
+
                     self.agent._session_db_created = False
+                    source = os.environ.get("HERMES_SESSION_SOURCE", "cli")
                     self._session_db.create_session(
                         session_id=self.session_id,
-                        source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        source=source,
+                        cwd=_launch_cwd_for_session(source),
                         model=self.model,
                         model_config={
                             "max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,

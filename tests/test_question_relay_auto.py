@@ -5,11 +5,82 @@ import subprocess
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from hermes_constants import get_hermes_home
 from hermes_question_relay import RelayStore, route_for, load_relay_config
 from hermes_state import SessionDB
+
+
+@pytest.mark.parametrize("use_tui,source,env_source,backend,profile,expected_source,allowed", [
+    (False, None, None, "local", "default", "cli", True),
+    (True, None, None, "local", "default", "tui", True),
+    (False, "tool", None, "local", "default", "tool", False),
+    (True, None, "kanban", "local", "default", "kanban", False),
+    (True, "tool", "tui", "local", "default", "tool", False),
+    (False, None, None, "docker", "default", "cli", False),
+    (True, None, None, "local", "other", "tui", False),
+])
+def test_named_creation_preserves_provenance_without_backfilling_resumes(
+    tmp_path, monkeypatch, use_tui, source, env_source, backend, profile, expected_source, allowed,
+):
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.main import _resolve_chat_session_args
+
+    home = get_hermes_home()
+    if profile != "default":
+        home = home / "profiles" / profile
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # conftest pins this import-time default before the test selects a named profile.
+    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", home / "state.db")
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", env_source or "")
+    # A stale terminal bridge must never supply the new project's provenance.
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "unrelated"))
+    project = tmp_path / "project"
+    subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "synthetic"],
+                   check=True, capture_output=True)
+    worktree = tmp_path / "new-worktree"
+    subprocess.run(["git", "-C", str(project), "worktree", "add", "-b", "synthetic", str(worktree)],
+                   check=True, capture_output=True)
+    monkeypatch.chdir(tmp_path)
+    db = SessionDB()
+    try:
+        db.create_session("legacy", "cli")
+        db.set_session_title("legacy", "Legacy")
+        legacy = db.get_session("legacy")
+        config = {"question_relay": {"auto": {"enabled": True,
+            "since": datetime.now(timezone.utc).isoformat(), "chat_id": "101", "user_id": "101"}}}
+        parser, _, _ = build_top_level_parser()
+        options = ["chat", "--continue", "Named", "--create-if-missing", "--in", str(worktree)]
+        if source:
+            options += ["--source", source]
+        args = parser.parse_args(options)
+        _resolve_chat_session_args(args, use_tui=use_tui)
+        row = db.get_session(args.resume)
+        assert row is not None
+        assert row["source"] == expected_source
+        assert row["profile_name"] == profile
+        assert row["cwd"] == (str(worktree.resolve()) if backend == "local" else None)
+        route = route_for(config, args.resume, db)
+        assert (route is not None) == allowed
+        if allowed:
+            assert route is not None
+            assert route["task"] == "project / new-worktree — Named"
+        # --create-if-missing must not renew or fill provenance of an existing session.
+        options[2] = "Legacy"
+        resumed = parser.parse_args(options)
+        _resolve_chat_session_args(resumed, use_tui=use_tui)
+        assert resumed.resume == "legacy"
+        assert db.get_session("legacy") == legacy
+        assert route_for(config, "legacy", db) is None
+        assert RelayStore(db).pending_delivery() == []
+    finally:
+        db.close()
 
 
 def test_auto_scope_worktrees_profiles_and_explicit_precedence(tmp_path):
