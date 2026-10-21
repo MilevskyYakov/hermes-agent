@@ -157,6 +157,17 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  if (event.type === 'clarify.resolved') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (sessionId && requestId && $clarifyRequests.get()[sessionId]?.requestId === requestId) {
+      // The following tool.complete carries the canonical answer. Do not synthesize a timeout.
+      clearClarifyRequest(requestId, sessionId)
+    }
+
+    return true
+  }
+
   if (event.type === 'clarify.expire') {
     if (!sessionId) {
       return true

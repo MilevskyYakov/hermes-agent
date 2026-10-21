@@ -1082,6 +1082,11 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     if proxied := _respond_compute_host_clarify(rid, params):
         return proxied
+    from tui_gateway.question_relay import respond
+    if (result := respond(params)) is not None:
+        if result.get("status") not in {"ok", "stopped"}:
+            return _err(rid, 5019, f"question relay: {result['status']}; the saved decision was not changed")
+        return _ok(rid, result)
     return _respond(rid, params, "answer", allow_expired=True)
 
 

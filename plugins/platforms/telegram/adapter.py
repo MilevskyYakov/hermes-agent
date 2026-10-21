@@ -3232,8 +3232,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+                if (metadata or {}).get("_question_relay"):
+                    return await self._bot.send_message(text=chunk, parse_mode=None, **send_kwargs), used_thread_fallback
                 return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
             except _NetErr as send_err:
+                if (metadata or {}).get("_question_relay"):
+                    # An addressed question must never fall back to another topic or blindly resend.
+                    raise
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
                     if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
@@ -3282,6 +3287,8 @@ class TelegramAdapter(BasePlatformAdapter):
                                self.name, _send_attempt + 1, wait, _redact_telegram_error_text(send_err))
                 await asyncio.sleep(wait)
             except Exception as send_err:
+                if (metadata or {}).get("_question_relay"):
+                    raise
                 retry_after = getattr(send_err, "retry_after", None)
                 if retry_after is not None or "retry after" in str(send_err).lower():
                     wait = float(retry_after) if retry_after is not None else 1.0
@@ -3336,13 +3343,18 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
             # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
-            if self._should_attempt_rich(content, metadata=metadata):
+            if not (metadata or {}).get("_question_relay") and self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
-            chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+            if (metadata or {}).get("_question_relay"):
+                if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+                    return SendResult(success=False, error="question relay message too long", retryable=False)
+                chunks = [content]
+            else:
+                chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
                 chunks = [
@@ -3435,6 +3447,16 @@ class TelegramAdapter(BasePlatformAdapter):
         continuations, and return the final chunk's id as the next edit target."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        if (metadata or {}).get("_question_relay"):
+            # A decision card is not a streaming preview: never truncate or move its reply target.
+            if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+                return SendResult(success=False, error="Question relay message exceeds Telegram limit")
+            try:
+                await self._edit_text(chat_id, message_id, content)
+            except Exception as error:
+                if "not modified" not in str(error).lower():
+                    return SendResult(success=False, error=_redact_telegram_error_text(error))
+            return SendResult(success=True, message_id=message_id)
         # Rich finalize (Bot API 10.1): edit the preview IN PLACE via rich_message — no fresh send + delete.
         # Before the 4,096 pre-flight because the rich cap is 32,768; falls back to legacy on rejection.
         # Rich finalize (Bot API 10.1): when the completed content has constructs the legacy MarkdownV2 edit

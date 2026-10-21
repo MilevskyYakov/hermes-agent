@@ -726,6 +726,11 @@ export type GatewayEvent =
       type: 'clarify.request'
     }
   | {
+      payload: { answers: Record<string, string>; request_id: string }
+      session_id?: string
+      type: 'clarify.resolved'
+    }
+  | {
       payload: {
         allow_permanent?: boolean
         choices?: string[]

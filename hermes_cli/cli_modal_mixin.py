@@ -276,6 +276,9 @@ class CLIModalMixin:
         paint = paint or self._paint_now
         last = _time.monotonic()
         while True:
+            if deadline_attr == "_clarify_deadline":
+                from hermes_cli.question_relay import poll
+                poll(self, response_queue)
             try:
                 return response_queue.get(timeout=1)
             except queue.Empty:
@@ -583,6 +586,10 @@ class CLIModalMixin:
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
         from tools.clarify_gateway import resolve_clarify_timeout
 
+        from hermes_cli.question_relay import block
+        handled, relayed = block(self, question, choices, multi_select, questions)
+        if handled:
+            return relayed
         if questions:
             return self._clarify_callback_batch(questions)
 
@@ -650,6 +657,10 @@ class CLIModalMixin:
         """Lock ``answer`` for the active batch question (overwriting an earlier one) and advance to
         the next unanswered; ``meta`` ({"kind": "choice"|"other"|"multi", ...}) lets a re-visit
         restore the cursor / prefill an "Other" edit. All answered → resolve the queue, tear down."""
+        from hermes_cli.question_relay import lock_answer
+        answer = lock_answer(self, state, answer)
+        if answer is None:
+            return
         entry = state["questions"][state["active"]]
         state["answers"][entry["qid"]] = answer
         state.setdefault("answer_meta", {})[entry["qid"]] = meta or {"kind": "choice"}
@@ -908,6 +919,8 @@ class CLIModalMixin:
                 self._cancel_secret_capture()
             except Exception:
                 self._secret_state = None
+        from hermes_cli.question_relay import stop
+        stop(self)
 
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:

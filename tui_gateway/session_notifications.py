@@ -458,6 +458,13 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
+        from tui_gateway.question_relay import tick
+        try:
+            tick(sid, session)
+        except Exception as exc:
+            _notif_log_failure("question relay state unavailable", exc)
+            if session.get("_question_relay_used"):
+                _interrupt_session_turn(sid, session)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

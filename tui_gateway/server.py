@@ -1292,9 +1292,17 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     if questions:
         wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
                 for e in questions]
+        from tui_gateway.question_relay import block as relay_block
+        handled, answer = relay_block(sid, {"questions": wire}, _clarify_timeout_seconds(), [e["qid"] for e in questions])
+        if handled:
+            return answer
         return _block("clarify.request", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
                       batch_qids=[e["qid"] for e in questions])
     payload = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
+    from tui_gateway.question_relay import block as relay_block
+    handled, answer = relay_block(sid, payload, _clarify_timeout_seconds())
+    if handled:
+        return answer
     return _block("clarify.request", sid, payload, timeout=_clarify_timeout_seconds())
 
 

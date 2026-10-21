@@ -254,6 +254,36 @@ describe('clarify.request stream hydration', () => {
     expect(stream.state().messages).toHaveLength(1)
   })
 
+  it('resolves only the matching remote question and keeps the canonical answer instead of a timeout', () => {
+    mountStream()
+    toolStart({ args: { question: 'Color?' }, name: 'clarify', tool_id: 'call-remote' })
+    clarifyRequest({ question: 'Color?', request_id: 'req-remote' })
+    const resolve = (requestId: string) =>
+      act(() =>
+        stream.handleEvent({
+          payload: { answers: { q1: 'BLUE' }, request_id: requestId },
+          session_id: SID,
+          type: 'clarify.resolved'
+        })
+      )
+
+    resolve('req-other')
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-remote')
+    resolve('req-remote')
+    resolve('req-remote')
+    expect($clarifyRequests.get()[SID]).toBeUndefined()
+    expect(clarifyParts()[0]).not.toHaveProperty('result')
+    toolComplete({
+      args: { question: 'Color?' },
+      name: 'clarify',
+      result: { question: 'Color?', user_response: 'BLUE' },
+      tool_id: 'call-remote'
+    })
+    expect(clarifyParts()).toHaveLength(1)
+    expect(clarifyParts()[0]).toMatchObject({ result: { user_response: 'BLUE' } })
+    expect(stream.state().needsInput).toBe(false)
+  })
+
   it('expires only the matching clarify request and deactivates its card', () => {
     mountStream()
 

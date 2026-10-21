@@ -391,6 +391,8 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
                     session["running"] = False
                     _clear_inflight_turn(session)
     _clear_pending(sid)
+    from tui_gateway.question_relay import stop
+    stop(session)
     with contextlib.suppress(Exception):
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)

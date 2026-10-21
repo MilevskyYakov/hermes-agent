@@ -1264,6 +1264,25 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'clarify.resolved': {
+        const { clarify } = getOverlayState()
+
+        if (clarify?.requestId !== ev.payload.request_id) {
+          return
+        }
+
+        appendMessage({
+          role: 'user',
+          text: clarify.questions?.length
+            ? clarify.questions.map(q => `${q.question} → ${ev.payload.answers[q.qid] ?? ''}`).join('\n')
+            : `${clarify.question} → ${ev.payload.answers.q1 ?? ''}`
+        })
+        patchOverlayState({ clarify: null })
+        setStatus(statusFromBusy())
+
+        return
+      }
+
       case 'approval.request': {
         const description = String(ev.payload.description ?? 'dangerous command')
         // Only an explicit false (tirith warning) drops the permanent-allow option.
