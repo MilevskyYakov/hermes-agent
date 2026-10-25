@@ -202,6 +202,32 @@ class TestExecutionGuidanceInjection:
     def test_gpt_still_gets_guidance(self):
         assert "Execution discipline" in self._prompt("openai/gpt-5.5")
 
+    def test_bounded_guidance_preserves_action_and_verification(self):
+        # Approved contract: finite task, reusable evidence, no fabricated completion.
+        # This checks assembled instructions, not the model's subsequent behavior.
+        agent = _make_agent(
+            valid_tool_names=["terminal", "read_file"],
+            model="openai/gpt-5.5",
+            _tool_use_enforcement=True,
+            _execution_guidance=True,
+            _task_completion_guidance=True,
+        )
+        stable = _stable_prompt(agent)
+        for heading in ("# Tool-use enforcement", "# Finishing the job", "# Execution discipline"):
+            assert stable.count(heading) == 1
+        for boundary in (
+            "A tool call must close a concrete task gap",
+            "Stop after the requested result",
+            "Verification follows the changed path and requested outcome",
+            "Repeat a check only for changed inputs",
+            "do not claim the whole task is done",
+            "NEVER substitute plausible-looking fabricated output",
+            "successful tool call is not a successful task",
+            "every named acceptance criterion is verified",
+        ):
+            assert boundary in stable
+        assert "Do not stop early when another tool call" not in stable
+
     def test_grok_still_gets_guidance(self):
         assert "Execution discipline" in self._prompt("xai/grok-4")
 

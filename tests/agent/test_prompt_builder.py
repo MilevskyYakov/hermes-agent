@@ -1115,7 +1115,8 @@ class TestOpenAIModelExecutionGuidance:
     def test_guidance_covers_retry_differently(self):
         text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
         assert "suspiciously narrow" in text
-        assert "retry" in text
+        assert "different query or strategy" in text
+        assert "when the missing coverage matters to the task" in text
 
     def test_guidance_gates_completion_on_verification(self):
         text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
