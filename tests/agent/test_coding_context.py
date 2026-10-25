@@ -228,6 +228,18 @@ class TestStatusParsing:
 # ── RuntimeMode seam ────────────────────────────────────────────────────────
 
 class TestRuntimeMode:
+    def test_coding_brief_is_task_scoped_and_verification_bounded(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='example'\n")
+        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
+        brief = mode.system_blocks()[0]
+        assert "For coding tasks only" in brief
+        assert "not evidence that the current request is a coding task" in brief
+        assert "smallest existing checks" in brief
+        assert "mandatory project checks" in brief
+        assert "not a general sibling-path audit" in brief
+        assert "Stop when" in brief
+        assert "tests/linter/build" not in brief
+
     def test_resolves_coding_in_repo(self, tmp_path):
         _git_init(tmp_path)
         mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={})
@@ -337,11 +349,30 @@ class TestProfiles:
 # ── detection signals ───────────────────────────────────────────────────────
 
 class TestDetection:
-    @pytest.mark.parametrize("marker", ["pyproject.toml", "package.json", "go.mod", "AGENTS.md"])
+    @pytest.mark.parametrize("marker", ["pyproject.toml", "package.json", "go.mod"])
     def test_project_manifest_triggers_without_git(self, tmp_path, marker):
         (tmp_path / marker).write_text("x")
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
+
+    @pytest.mark.parametrize("marker", ["AGENTS.md", "CLAUDE.md", ".cursorrules"])
+    @pytest.mark.parametrize("mode", ["auto", "focus"])
+    def test_instruction_file_does_not_turn_notes_into_code(self, tmp_path, marker, mode):
+        (tmp_path / marker).write_text("Use the user's language.\n")
+        (tmp_path / "notes.md").write_text("# Notes\n")
+        subdir = tmp_path / "journal"
+        subdir.mkdir()
+        for cwd in (tmp_path, subdir):
+            runtime = cc.resolve_runtime_mode(
+                platform="cli", cwd=cwd, config={"agent": {"coding_context": mode}},
+            )
+            assert runtime.kind == "general"
+            assert runtime.system_blocks() == []
+            assert runtime.toolset_selection() is None
+        forced = cc.resolve_runtime_mode(
+            platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "on"}},
+        )
+        assert forced.is_coding
 
     def test_marker_in_parent_counts_from_subdir(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("x")

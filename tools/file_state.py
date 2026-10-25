@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 # (mtime, read_ts, partial). partial=True when read_file returned a windowed
-# view (offset > 1 or limit < total_lines) — a later write should still warn
-# so the model re-reads in full.
+# view (offset > 1 or limit < total_lines). Full overwrites need a full read;
+# context-matched patches preserve the unread content.
 ReadStamp = Tuple[float, float, bool]
 
 # Bounded so long sessions don't accumulate unbounded state.
@@ -118,7 +118,7 @@ class FileStateRegistry:
             _evict_oldest(self._last_writer, _MAX_GLOBAL_WRITERS)
             self._stamp(task_id, resolved, mtime, now, False)
 
-    def check_stale(self, task_id: str, resolved: str) -> Optional[str]:
+    def check_stale(self, task_id: str, resolved: str, *, full_overwrite: bool = True) -> Optional[str]:
         """Model-facing warning if this write would be stale, else ``None``. Severity
         order: sibling wrote after our read > mtime drift / partial read > never read."""
         if _disabled():
@@ -157,7 +157,7 @@ class FileStateRegistry:
                     f"{resolved} was modified since you last read it "
                     "on disk (external edit or unrecorded writer). "
                     "Re-read the file before writing.")
-            if partial:
+            if partial and full_overwrite:
                 return (
                     f"{resolved} was last read with offset/limit pagination "
                     "(partial view). Re-read the whole file before "
@@ -221,8 +221,8 @@ def note_write(task_id: str, resolved_or_path: str | Path) -> None:
     _registry.note_write(task_id, str(resolved_or_path))
 
 
-def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
-    return _registry.check_stale(task_id, str(resolved_or_path))
+def check_stale(task_id: str, resolved_or_path: str | Path, *, full_overwrite: bool = True) -> Optional[str]:
+    return _registry.check_stale(task_id, str(resolved_or_path), full_overwrite=full_overwrite)
 
 
 def lock_path(resolved_or_path: str | Path):

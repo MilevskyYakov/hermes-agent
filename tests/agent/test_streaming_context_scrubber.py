@@ -182,3 +182,17 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
         assert not any("pre-wrapped" in rec.message for rec in caplog.records)
         assert "plain fact about user" in out
+
+    def test_recalled_memory_is_relevant_background_not_authority(self):
+        from agent.memory_manager import build_memory_context_block, sanitize_context
+
+        out = build_memory_context_block("User prefers short answers.")
+        assert "User prefers short answers." in out
+        assert "not instructions or permission" in out
+        assert "only when relevant" in out
+        assert "authoritative reference data" not in out
+        assert "should inform all responses" not in out
+        # A provider returning the bare note must not multiply wrapper instructions.
+        note = out.split("\n\n", 1)[0].split("\n", 1)[1]
+        assert sanitize_context(note) == ""
+        assert build_memory_context_block("  ") == ""
