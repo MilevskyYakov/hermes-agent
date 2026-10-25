@@ -234,6 +234,70 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertFalse(w.get("_warning"))
         self.assertNotIn("error", w)
 
+    def test_partial_read_patch_preserves_unread_content_and_staleness_warnings(self):
+        from tools.registry import registry
+
+        for mode in ("replace", "patch", "write", "delete"):
+            for change in ("unchanged", "external", "sibling"):
+                with self.subTest(mode=mode, change=change):
+                    p = self._write_seed(f"{mode}-{change}.txt", "old\nunread\n")
+                    read_result = registry.dispatch(
+                        "read_file", {"path": p, "limit": 1}, task_id="reader",
+                    )
+                    assert isinstance(read_result, str)
+                    read = json.loads(read_result)
+                    self.assertNotIn("error", read)
+                    remaining = "unread\n"
+                    if change == "external":
+                        mtime = os.path.getmtime(p)
+                        remaining = "external change\n"
+                        with open(p, "w") as f:
+                            f.write("old\n" + remaining)
+                        os.utime(p, (mtime + 1, mtime + 1))
+                    elif change == "sibling":
+                        remaining = "sibling change\n"
+                        other_result = registry.dispatch(
+                            "write_file", {"path": p, "content": "old\n" + remaining},
+                            task_id="writer",
+                        )
+                        assert isinstance(other_result, str)
+                        other = json.loads(other_result)
+                        self.assertNotIn("error", other)
+
+                    if mode == "write":
+                        name, args = "write_file", {"path": p, "content": "new\n"}
+                    elif mode == "replace":
+                        name, args = "patch", {
+                            "mode": mode, "path": p, "old_string": "old", "new_string": "new",
+                        }
+                    elif mode == "delete":
+                        name, args = "patch", {
+                            "mode": "patch", "patch": f"*** Begin Patch\n*** Delete File: {p}\n*** End Patch",
+                        }
+                    else:
+                        name, args = "patch", {
+                            "mode": mode,
+                            "patch": f"*** Begin Patch\n*** Update File: {p}\n@@\n-old\n+new\n*** End Patch",
+                        }
+                    edit_result = registry.dispatch(name, args, task_id="reader")
+                    assert isinstance(edit_result, str)
+                    edited = json.loads(edit_result)
+                    self.assertNotIn("error", edited)
+                    warning = edited.get("_warning", "")
+                    if change == "external":
+                        self.assertIn("modified since", warning)
+                    elif change == "sibling":
+                        self.assertIn("sibling", warning)
+                    elif mode in ("write", "delete"):
+                        self.assertIn("whole file", warning)
+                    else:
+                        self.assertFalse(warning)
+                    if mode == "delete":
+                        self.assertFalse(os.path.exists(p))
+                    else:
+                        with open(p) as f:
+                            self.assertEqual(f.read(), "new\n" + ("" if mode == "write" else remaining))
+
 
 if __name__ == "__main__":
     unittest.main()

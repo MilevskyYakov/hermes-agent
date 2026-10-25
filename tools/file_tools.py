@@ -685,14 +685,16 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
             or _check_approval_required_write(paths, task_id))
 
 
-def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> list[str]:
+def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str,
+                   *, partial_edit_paths: set[str] | None = None) -> list[str]:
     """One pre-edit warning per path, in priority order: cross-agent registry
     (names the sibling subagent) > per-task staleness > workspace divergence
     (relative path resolving outside the terminal's cwd — the worktree-cwd bug)."""
     warnings: list[str] = []
     for p in paths:
         r = path_to_resolved.get(p)
-        w = (file_state.check_stale(task_id, r) if r else None) or _check_file_staleness(p, task_id)
+        w = (file_state.check_stale(task_id, r, full_overwrite=p not in (partial_edit_paths or ()))
+             if r else None) or _check_file_staleness(p, task_id)
         if not w and r:
             w = _path_resolution_warning(p, Path(r), task_id)
         if w:
@@ -869,7 +871,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         with ExitStack() as _locks:
             for _r in sorted({_r for _r in _path_to_resolved.values() if _r}):
                 _locks.enter_context(file_state.lock_path(_r))
-            stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
+            # Only context-matched edits preserve unread content; Add/Delete/Move
+            # headers retain the conservative whole-file warning.
+            partial_edit_paths = {path} if mode == "replace" and path else {
+                m.group(3).strip() for m in _V4A_SINGLE_HEADER_RE.finditer(patch or "")
+                if m.group(2) == "Update"
+            }
+            stale_warnings = _edit_warnings(
+                _paths_to_check, _path_to_resolved, task_id, partial_edit_paths=partial_edit_paths,
+            )
             file_ops = _get_file_ops(task_id)
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
