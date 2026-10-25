@@ -577,6 +577,43 @@ def _load_skill_blocks(
     return loaded_names, missing, disabled, blocks
 
 
+# These headers are emitted only by the session-wide skill renderers below.
+AUTO_LOAD_SKILL_HEADER = re.compile(
+    r'^\[IMPORTANT: The "([^"\n]+)" skill is '
+    r'(?:configured as always-on\.|auto-loaded via config \(skills\.auto_load\)\.)[^\n]*\]\n\n',
+    re.MULTILINE,
+)
+_PRELOADED_SKILL_HEADER = re.compile(
+    r'^\[IMPORTANT: The user launched this CLI session with the "([^"\n]+)" skill '
+    r'preloaded\.[^\n]*\]\n\n', re.MULTILINE,
+)
+
+
+def append_ephemeral_system_prompt(system: str, ephemeral: str | None) -> str:
+    """Append caller context, excluding only byte-identical native auto-loaded skills.
+
+    Compare rendered bytes, not today's config: optional/skipped loads must not
+    swallow explicit skills, and pinned older text must not hide a requested update.
+    Never mutate the cached prompt or the caller's ephemeral text.
+    """
+    if not ephemeral:
+        return system
+    automatic = list(AUTO_LOAD_SKILL_HEADER.finditer(system))
+    explicit = list(_PRELOADED_SKILL_HEADER.finditer(ephemeral))
+    if automatic and explicit:
+        parts = [ephemeral[:explicit[0].start()]]
+        for index, match in enumerate(explicit):
+            end = explicit[index + 1].start() if index + 1 < len(explicit) else len(ephemeral)
+            body = ephemeral[match.end():end].strip()
+            if not body or not any(
+                auto.group(1) == match.group(1) and (auto.group(0) + body) in system
+                for auto in automatic
+            ):
+                parts.append(ephemeral[match.start():end])
+        ephemeral = "".join(parts).strip()
+    return (system + "\n\n" + ephemeral).strip() if ephemeral else system
+
+
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str], task_id: str | None = None, *, always_on: bool = False,
 ) -> tuple[str, list[str], list[str]]:
@@ -604,3 +641,53 @@ def build_preloaded_skills_prompt(
         task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
     )
     return "\n\n".join(prompt_parts), loaded_names, missing
+
+
+# Backported from NousResearch/hermes-agent 4ea8d23cc9f527332ccb1d55359b27741b6ea51b.
+def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
+    """``skills.auto_load`` from *user_config* (else the active profile config), deduplicated;
+    empty when unset, malformed, or the config is unreadable."""
+    if user_config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            user_config = load_config_readonly()
+        except Exception:
+            return []
+    skills_block = user_config.get("skills") if isinstance(user_config, dict) else None
+    auto_load = skills_block.get("auto_load") if isinstance(skills_block, dict) else None
+    # Transitional input alias only; one native loader renders both, without duplicate blocks.
+    legacy = skills_block.get("always_on", []) if isinstance(skills_block, dict) else []
+    auto_load = (auto_load if isinstance(auto_load, list) else []) + (legacy if isinstance(legacy, list) else [])
+    names = [entry.strip() for entry in auto_load if isinstance(entry, str) and entry.strip()]
+    return list(dict.fromkeys(names))
+
+
+def build_auto_load_prompt(
+    task_id: str | None = None, user_config: dict | None = None, home_override: Path | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Render ``skills.auto_load`` as fully loaded skill blocks for a new session; returns
+    ``(prompt_text, loaded_names, missing)``. Missing and operator-disabled names are reported,
+    never raised: a typo in config must not block session start on any surface.
+
+    *home_override* makes home resolution EXPLICIT (same seam as ``build_skills_system_prompt``): the config,
+    the disabled list and the ``<home>/skills`` lookup all resolve under that home, so a gateway build thread
+    that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
+    try:
+        auto_skills = resolve_auto_load_skills(user_config)
+        if not auto_skills:
+            return "", [], []
+        loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
+            auto_skills,
+            lambda identifier: _load_skill_payload(identifier, task_id=task_id),
+            lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.auto_load). '
+                          "Treat its instructions as active guidance for the duration of this session unless "
+                          "the user overrides them.]"),
+            task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+        )
+        return "\n\n".join(prompt_parts), loaded_names, missing
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)

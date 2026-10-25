@@ -26,7 +26,6 @@ from agent.prompt_builder import (
 )
 from agent import prompt_builder as _pb
 from agent.runtime_cwd import resolve_context_cwd
-from agent.skill_utils import get_always_on_skill_names
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
@@ -597,9 +596,59 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
         allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
 
 
+# Backported native auto_load lifecycle (NousResearch/hermes-agent 4ea8d23c).
+def _auto_load_parts(agent: Any) -> list[str]:
+    """``skills.auto_load`` blocks, resolved once per agent lifecycle (config, skill files and
+    HERMES_IGNORE_RULES are read on the first build only) so the prompt stays byte-stable
+    across model switches, compression and static-prefix restoration.
+
+    Same gate as ``_skills_prompt``: nothing without the skills toolset, and nothing for agents that skip
+    context files (delegate children, curator/review forks, gateway hygiene agents) — pinned skills are
+    operator guidance for the user's session, not payload for every internal fork."""
+    if getattr(agent, "skip_context_files", False) or not any(
+            name in agent.valid_tool_names for name in ("skills_list", "skill_view", "skill_manage")):
+        return []
+    if not getattr(agent, "_auto_load_skills_resolved", False):
+        result: tuple[str, list[str], list[str]] = ("", [], [])
+        try:
+            if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
+                from agent.skill_commands import build_auto_load_prompt
+                result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None), home_override=_agent_home(agent))
+            if result[2]:
+                logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(result[2]))
+        except Exception:
+            logger.debug("skills.auto_load: injection skipped", exc_info=True)  # config errors never block session start
+        agent._auto_load_skills_result = result
+        agent._auto_load_skills_resolved = True
+    prompt = agent._auto_load_skills_result[0]
+    return [prompt] if prompt else []
+
+
 def _join_tier(parts: List[Optional[str]]) -> str:
     """Join non-empty parts; None/blank entries are dropped."""
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
+
+
+def recover_legacy_auto_load(prompt: str) -> str:
+    """Recover only the skill slot of the native pre-snapshot prompt layout.
+
+    No source files are read and no historical version is inferred. The native
+    environment/model-identity slot follows auto-load, including its supporting files.
+    """
+    from agent.skill_commands import AUTO_LOAD_SKILL_HEADER
+    start = AUTO_LOAD_SKILL_HEADER.search(prompt)
+    if start is None:
+        return ""
+    # ponytail: support the native legacy layout only; unknown boundaries require a handoff.
+    boundary = re.search(
+        r'\n\n(?=Host: [^\n]+\nUser home directory: |Terminal backend: |'
+        r'You are powered by the model named [^\n]+\. The exact model ID is )', prompt,
+    )
+    if boundary is None:
+        raise ValueError("Cannot recover legacy skill boundaries; start a new chat with a handoff")
+    if start.start() >= boundary.start():
+        return ""  # A marker quoted in project context is not the native auto-load slot.
+    return prompt[start.start():boundary.start()]
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -613,6 +662,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
+    from agent.instruction_contract import instruction_context
+    instruction_skills, project_parts = instruction_context(agent, soul_loaded=_soul_loaded)
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
@@ -622,19 +673,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     preset = getattr(agent, "_session_toolset_preset", None)
     if preset:
         stable_parts.append(f"[Session toolset preset: {preset}]")
-    always_on_skills = get_always_on_skill_names()
-    if always_on_skills:
-        from agent.skill_commands import build_preloaded_skills_prompt
-
-        always_on_prompt, _loaded, missing = build_preloaded_skills_prompt(
-            always_on_skills,
-            task_id=getattr(agent, "session_id", None),
-            always_on=True,
-        )
-        if missing:
-            logger.warning("Configured always-on skills not found or disabled: %s", ", ".join(missing))
-        if always_on_prompt:
-            stable_parts.append(always_on_prompt)
+    stable_parts.extend(instruction_skills)
     skills_prompt = _skills_prompt(agent)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
@@ -656,7 +695,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ephemeral_system_prompt is injected at API-call time only, never cached.
     if system_message is not None:
         context_parts.append(system_message)
-    context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+    context_parts.extend(project_parts)
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.

@@ -643,6 +643,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     Mutates ``agent._cached_system_prompt`` and persists a freshly-built prompt on first
     build. Row states ``missing``/``null``/``empty``/``present`` are logged and DB
     failures log at WARNING so silent prefix-cache misses show in ``agent.log``."""
+    from agent.instruction_contract import prepare_instructions
+    prepare_instructions(agent, continuing=bool(conversation_history))
     stored_prompt = None
     stored_state = "missing"
     session_row = None
@@ -1045,7 +1047,8 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     if not isinstance(sp, str) or not sp:
         return active_system_prompt
     if api_messages and api_messages[0].get("role") == "system":
-        effective = (sp + "\n\n" + agent.ephemeral_system_prompt).strip() if agent.ephemeral_system_prompt else sp
+        from agent.skill_commands import append_ephemeral_system_prompt
+        effective = append_ephemeral_system_prompt(sp, agent.ephemeral_system_prompt)
         if not _rewrite_system_content_blocks(api_messages[0], effective):
             api_messages[0]["content"] = effective
     return sp

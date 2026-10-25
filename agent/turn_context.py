@@ -876,6 +876,10 @@ def build_turn_context(
             f"{'...' if len(_preview_text) > 60 else ''}'"
         )
 
+    # Version checks notify out-of-band; never mutate the cached prefix/history.
+    from agent.instruction_contract import prepare_instructions, persist_instructions
+    prepare_instructions(agent, continuing=bool(conversation_history))
+
     # System prompt is cached per session for prefix caching.
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
@@ -891,6 +895,7 @@ def build_turn_context(
         logger.debug("message_agent injection skipped", exc_info=True)
 
     _ensure_session_row(agent, pending_cli_message)
+    persist_instructions(agent)
 
     compaction = run_turn_start_compaction(
         agent, messages=messages, system_message=system_message,
@@ -1043,9 +1048,8 @@ def build_api_messages(
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the
     # prompt is built ONCE per session and replayed verbatim (stable cache prefix).
-    effective_system = active_system_prompt or ""
-    if agent.ephemeral_system_prompt:
-        effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+    from agent.skill_commands import append_ephemeral_system_prompt
+    effective_system = append_ephemeral_system_prompt(active_system_prompt or "", agent.ephemeral_system_prompt)
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     return api_messages, effective_system

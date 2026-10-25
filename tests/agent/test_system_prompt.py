@@ -347,25 +347,22 @@ def test_build_system_prompt_records_stable_prefix():
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
 
 
-def test_always_on_skill_is_part_of_stable_prompt(monkeypatch):
-    agent = _make_agent(session_id="session-123")
-    monkeypatch.setattr("agent.system_prompt.get_always_on_skill_names", lambda: ["caveman"])
-
-    with (
-        patch("agent.prompt_builder.load_soul_md", return_value=""),
-        patch("agent.prompt_builder.build_environment_hints", return_value=""),
-        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
-        patch(
-            "agent.skill_commands.build_preloaded_skills_prompt",
-            return_value=("CAVEMAN FULL GUIDANCE", ["caveman"], []),
-        ) as build_always_on,
-    ):
-        parts = build_system_prompt_parts(agent)
-
-    assert "CAVEMAN FULL GUIDANCE" in parts["stable"]
-    build_always_on.assert_called_once_with(
-        ["caveman"], task_id="session-123", always_on=True
-    )
+def test_auto_load_legacy_alias_keeps_caveman_once_in_stable_prompt(tmp_path, monkeypatch):
+    import yaml
+    home = tmp_path / "profile"
+    skill = home / "skills" / "caveman"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: caveman\ndescription: Concise style.\n---\nCAVEMAN FULL GUIDANCE")
+    (home / "config.yaml").write_text(yaml.safe_dump({"skills": {
+        "auto_load": ["caveman"], "always_on": ["caveman"], "hidden": ["caveman"],
+    }}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    agent = _make_agent(session_id="session-123", valid_tool_names=["skill_view"])
+    parts = build_system_prompt_parts(agent)
+    assert parts["stable"].count("CAVEMAN FULL GUIDANCE") == 1
+    assert "CAVEMAN FULL GUIDANCE" not in parts["volatile"]
+    (skill / "SKILL.md").write_text("---\nname: caveman\ndescription: Changed style.\n---\nNEW STYLE")
+    assert build_system_prompt_parts(agent)["stable"] == parts["stable"]
 
 
 def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
