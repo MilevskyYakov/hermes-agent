@@ -629,6 +629,28 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
+def recover_legacy_auto_load(prompt: str) -> str:
+    """Recover only the skill slot of the native pre-snapshot prompt layout.
+
+    No source files are read and no historical version is inferred. The native
+    environment/model-identity slot follows auto-load, including its supporting files.
+    """
+    from agent.skill_commands import AUTO_LOAD_SKILL_HEADER
+    start = AUTO_LOAD_SKILL_HEADER.search(prompt)
+    if start is None:
+        return ""
+    # ponytail: support the native legacy layout only; unknown boundaries require a handoff.
+    boundary = re.search(
+        r'\n\n(?=Host: [^\n]+\nUser home directory: |Terminal backend: |'
+        r'You are powered by the model named [^\n]+\. The exact model ID is )', prompt,
+    )
+    if boundary is None:
+        raise ValueError("Cannot recover legacy skill boundaries; start a new chat with a handoff")
+    if start.start() >= boundary.start():
+        return ""  # A marker quoted in project context is not the native auto-load slot.
+    return prompt[start.start():boundary.start()]
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (through
     the coding operating brief when a workspace snapshot follows), ``context``

@@ -577,6 +577,43 @@ def _load_skill_blocks(
     return loaded_names, missing, disabled, blocks
 
 
+# These headers are emitted only by the session-wide skill renderers below.
+AUTO_LOAD_SKILL_HEADER = re.compile(
+    r'^\[IMPORTANT: The "([^"\n]+)" skill is '
+    r'(?:configured as always-on\.|auto-loaded via config \(skills\.auto_load\)\.)[^\n]*\]\n\n',
+    re.MULTILINE,
+)
+_PRELOADED_SKILL_HEADER = re.compile(
+    r'^\[IMPORTANT: The user launched this CLI session with the "([^"\n]+)" skill '
+    r'preloaded\.[^\n]*\]\n\n', re.MULTILINE,
+)
+
+
+def append_ephemeral_system_prompt(system: str, ephemeral: str | None) -> str:
+    """Append caller context, excluding only byte-identical native auto-loaded skills.
+
+    Compare rendered bytes, not today's config: optional/skipped loads must not
+    swallow explicit skills, and pinned older text must not hide a requested update.
+    Never mutate the cached prompt or the caller's ephemeral text.
+    """
+    if not ephemeral:
+        return system
+    automatic = list(AUTO_LOAD_SKILL_HEADER.finditer(system))
+    explicit = list(_PRELOADED_SKILL_HEADER.finditer(ephemeral))
+    if automatic and explicit:
+        parts = [ephemeral[:explicit[0].start()]]
+        for index, match in enumerate(explicit):
+            end = explicit[index + 1].start() if index + 1 < len(explicit) else len(ephemeral)
+            body = ephemeral[match.end():end].strip()
+            if not body or not any(
+                auto.group(1) == match.group(1) and (auto.group(0) + body) in system
+                for auto in automatic
+            ):
+                parts.append(ephemeral[match.start():end])
+        ephemeral = "".join(parts).strip()
+    return (system + "\n\n" + ephemeral).strip() if ephemeral else system
+
+
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str], task_id: str | None = None, *, always_on: bool = False,
 ) -> tuple[str, list[str], list[str]]:

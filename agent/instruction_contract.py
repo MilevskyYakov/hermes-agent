@@ -93,6 +93,11 @@ def _validate(snapshot, home):
     if snapshot.get("version") != 2 or snapshot.get("home") != str(home):
         raise ValueError("Instruction snapshot version/profile mismatch; start a new chat")
     if snapshot.get("legacy") is True:
+        if "legacy_skills" in snapshot and (
+            not isinstance(snapshot["legacy_skills"], str)
+            or _hash(snapshot["legacy_skills"]) != snapshot.get("legacy_skills_sha256")
+        ):
+            raise ValueError("Legacy skill snapshot checksum/shape mismatch; start a new chat")
         return
     try:
         valid = (
@@ -137,6 +142,16 @@ def prepare_instructions(agent, *, continuing: bool = False) -> None:
         agent._instruction_contract_dirty = True
     if snapshot is not None:
         _validate(snapshot, home)
+        if snapshot.get("legacy") and "legacy_skills" not in snapshot:
+            from agent.system_prompt import recover_legacy_auto_load
+            prompt = getattr(agent, "_cached_system_prompt", None)
+            db = getattr(agent, "_session_db", None)
+            if prompt is None and db is not None:
+                prompt = (db.get_session(session_id) or {}).get("system_prompt")
+            if isinstance(prompt, str):
+                snapshot["legacy_skills"] = recover_legacy_auto_load(prompt)
+                snapshot["legacy_skills_sha256"] = _hash(snapshot["legacy_skills"])
+                agent._instruction_contract_dirty = True
         _warn_if_changed(agent, snapshot, home)
 
 
@@ -179,7 +194,7 @@ def instruction_context(agent, *, soul_loaded=False):
     prepare_instructions(agent)
     snapshot = getattr(agent, "_instruction_contract_snapshot", None)
     if isinstance(snapshot, dict) and snapshot.get("legacy"):
-        return [], [_project(agent, soul_loaded)]
+        return [snapshot.get("legacy_skills", "")], [_project(agent, soul_loaded)]
     if snapshot is None:
         home = _home(agent)
         if not _pin_enabled(home):

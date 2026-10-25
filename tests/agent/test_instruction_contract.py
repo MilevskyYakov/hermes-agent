@@ -31,6 +31,144 @@ def _agent(home, session_id, db) -> tuple[Any, list[str]]:
     return agent, notices
 
 
+@pytest.mark.parametrize("legacy_marker", [False, True])
+@pytest.mark.parametrize("restart", [False, True])
+def test_legacy_skills_survive_compaction_without_adopting_current_files(tmp_path, monkeypatch, legacy_marker, restart):
+    from agent.conversation_loop import _restore_or_build_system_prompt
+    from agent.conversation_compression import _rebuild_system_prompt_at_boundary
+    from agent.instruction_contract import prepare_instructions, persist_instructions
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    home, config = _migration_home(tmp_path, monkeypatch, ["style-rule"])
+    db = SessionDB(home / "state.db")
+    try:
+        db.create_session("old", source="tui")
+        agent, _ = _agent(home, "old", db)
+        old = agent._build_system_prompt()
+        old_skills = agent._auto_load_skills_result[0]
+        if legacy_marker:
+            historical, _, _ = build_preloaded_skills_prompt(["style-rule"], always_on=True)
+            old = old.replace(old_skills, historical)
+            old_skills = historical
+            agent._cached_system_prompt = old
+        assert "Style rule: keep answers concise." in old
+        agent._cached_system_prompt = old
+        from agent.system_prompt import recover_legacy_auto_load
+        assert recover_legacy_auto_load(old) == old_skills
+        with pytest.raises(ValueError, match="boundaries"):
+            recover_legacy_auto_load(old_skills)  # No native end boundary: do not guess.
+        db.update_system_prompt("old", old)
+        config["skills"]["auto_load"] = ["style-rule", "shared-rule"]
+        config["instructions"]["pin"] = True
+        (home / "config.yaml").write_text(yaml.safe_dump(config))
+        (home / "skills/style-rule/SKILL.md").write_text(_rule("CHANGED STYLE MUST NOT REPLACE SAVED BYTES"))
+        history = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "ready"}]
+        resumed, notices = _agent(home, "old", db) if restart else (agent, [])
+        resumed._emit_warning = notices.append
+        if restart:
+            _restore_or_build_system_prompt(resumed, "", history)
+        else:
+            prepare_instructions(resumed, continuing=True)
+        assert "version unknown" in notices[0]
+        persist_instructions(resumed)
+        resumed._memory_enabled = True
+        resumed._user_profile_enabled = False
+        resumed._memory_store = SimpleNamespace(
+            load_from_disk=lambda: None,
+            format_for_system_prompt=lambda kind: "Fresh memory after compaction.",
+        )
+        rebuilt = _rebuild_system_prompt_at_boundary(resumed, "")
+        assert "Fresh memory after compaction." in rebuilt
+        assert rebuilt.count(old_skills) == 1
+        assert "CHANGED STYLE" not in rebuilt and "Global rule: ask before deployment." not in rebuilt
+        # A second process must not need the current skill files to preserve the old bytes.
+        db.update_system_prompt("old", rebuilt)
+        (home / "skills/style-rule/SKILL.md").unlink()
+        again, _ = _agent(home, "old", db)
+        _restore_or_build_system_prompt(again, "", history)
+        assert _rebuild_system_prompt_at_boundary(again, "").count(old_skills) == 1
+        damaged = db.get_session_model_config_value("old", "_instruction_contract")
+        assert damaged["legacy"] is True  # Recovered bytes are not an invented historic version.
+        damaged["legacy_skills"] += "corruption"
+        db.patch_session_model_config("old", {"_instruction_contract": damaged})
+        broken, _ = _agent(home, "old", db)
+        with pytest.raises(ValueError, match="checksum"):
+            prepare_instructions(broken, continuing=True)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("pin", [False, True])
+@pytest.mark.parametrize("skip_context", [False, True])
+def test_cli_preload_keeps_explicit_skills_without_duplicate_auto_load(tmp_path, monkeypatch, pin, skip_context):
+    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.turn_context import build_api_messages
+
+    home, _ = _migration_home(tmp_path, monkeypatch, ["shared-rule"], pin=pin)
+    db = SessionDB(home / "state.db")
+    try:
+        db.create_session("new", source="cli")
+        agent, _ = _agent(home, "new", db)
+        agent.skip_context_files = skip_context
+        # Include an unrelated explicit skill and surrounding custom context: neither may be lost.
+        explicit, names, missing = build_preloaded_skills_prompt(["shared-rule", "style-rule"])
+        assert set(names) == {"shared-rule", "style-rule"} and not missing
+        agent.ephemeral_system_prompt = "Caller instruction.\n\n" + explicit
+        prompt = agent._build_system_prompt()
+        wire, effective = build_api_messages(
+            agent, [], current_turn_user_idx=None, ext_prefetch_cache=None,
+            plugin_user_context=None, moa_config=None, active_system_prompt=prompt,
+        )
+        assert wire[0]["content"] == effective
+        assert effective.count("Global rule: ask before deployment.") == 1
+        assert effective.count("Style rule: keep answers concise.") == 1
+        assert "Caller instruction." in effective
+        assert agent.ephemeral_system_prompt == "Caller instruction.\n\n" + explicit
+        # The same composition is used on provider failover and the iteration-limit summary path.
+        from agent.conversation_loop import _sync_failover_system_message
+        from agent.chat_completion_helpers import _iteration_summary_api_messages
+        failover_wire = [{"role": "system", "content": "stale"}]
+        agent._cached_system_prompt = prompt  # Normally set by the turn prologue, not the pure builder.
+        assert _sync_failover_system_message(agent, failover_wire, "stale") == prompt
+        assert failover_wire == wire
+        agent._should_sanitize_tool_calls = lambda: False
+        agent.prefill_messages = []
+        agent._sanitize_api_messages = lambda messages: messages
+        agent._drop_thinking_only_and_merge_users = lambda messages: messages
+        assert _iteration_summary_api_messages(agent, []) == wire
+        # A user-requested different version is not a duplicate of the pinned bytes.
+        (home / "skills/shared-rule/SKILL.md").write_text(_rule("Explicit revised rule."))
+        agent.ephemeral_system_prompt = build_preloaded_skills_prompt(["shared-rule"])[0]
+        _, updated = build_api_messages(
+            agent, [], current_turn_user_idx=None, ext_prefetch_cache=None,
+            plugin_user_context=None, moa_config=None, active_system_prompt=prompt,
+        )
+        assert updated.count("Explicit revised rule.") == 1
+        assert updated.startswith(prompt)
+    finally:
+        db.close()
+
+
+def _migration_home(tmp_path, monkeypatch, names, pin=False):
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("Project rule: preserve local checks.")
+    for name, body in [("style-rule", "Style rule: keep answers concise."),
+                       ("shared-rule", "Global rule: ask before deployment.")]:
+        directory = home / "skills" / name
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Test rules.\n---\n{body}")
+        (directory / "references").mkdir()
+        (directory / "references/example.md").write_text("Supporting reference.")
+    config = {"skills": {"auto_load": names}, "instructions": {"pin": pin}}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(project))
+    return home, config
+
+
 def _configure(home, source):
     home.mkdir(exist_ok=True)
     skill = source.parent

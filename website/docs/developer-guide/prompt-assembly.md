@@ -50,6 +50,10 @@ from [NousResearch/hermes-agent 4ea8d23c](https://github.com/NousResearch/hermes
 `agent.system_prompt._auto_load_parts`. Existing `skills.always_on` is a transitional input
 alias merged into the same list, not a second renderer. Hidden skills remain loadable by
 name; disabled skills are not loaded. Ordinary auto_load is best-effort and logs missing names.
+Explicit CLI preloads whose rendered bodies are already auto-loaded are omitted from the
+API-time addition, including failover and iteration-limit summaries. Unrelated caller text,
+skipped auto-loads, and explicitly requested different versions remain intact; the cached
+system prompt and the original ephemeral input are not rewritten.
 
 The fork's optional **`instructions.pin`** adds version continuity; it is not an upstream
 setting. No separate Markdown loader or `instructions.file` is needed:
@@ -79,9 +83,14 @@ than silently leaking another project's rules. A new session ID adopts current r
 Compaction still reloads memory and refreshes tools. SOUL identity, plugins and other native
 blocks retain their existing lifecycle. Progressive subdirectory hints are tool-result
 context, not the pinned startup slice. Legacy sessions without a snapshot are marked unknown;
-they do not acquire today's auto-loaded contract retroactively. Persisted snapshot errors
-fail explicitly instead of replacing saved rules with current files. In-memory embedders
-without a SessionDB cannot promise cross-process resume.
+they do not acquire today's auto-loaded contract retroactively. Recognizable native auto-load
+or always-on blocks are recovered verbatim from the cached/persisted prompt and retained with
+a checksum in the legacy record, including supporting-file instructions. Their source version
+remains unknown. No current skill files are used for recovery; an unrecognizable legacy skill
+boundary fails explicitly and requires a new chat with a handoff. Other prompt sections keep
+their native rebuild lifecycle. Persisted snapshot errors fail explicitly instead of replacing
+saved rules with current files. In-memory embedders without a SessionDB cannot promise
+cross-process resume.
 
 Disabling pinning affects new sessions, not saved snapshots. Configuration and runtime
 rollout require separate approval. Deploy the compatible runtime before switching to

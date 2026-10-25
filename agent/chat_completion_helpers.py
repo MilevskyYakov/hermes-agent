@@ -2274,9 +2274,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
         api_messages.append(api_msg)
 
-    effective_system = agent._cached_system_prompt or ""
-    if agent.ephemeral_system_prompt:
-        effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+    from agent.skill_commands import append_ephemeral_system_prompt
+    effective_system = append_ephemeral_system_prompt(agent._cached_system_prompt or "", agent.ephemeral_system_prompt)
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     for idx, pfm in enumerate(agent.prefill_messages or ()):
