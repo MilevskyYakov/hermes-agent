@@ -41,43 +41,54 @@ This ordering matters for precedence discussions:
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
 
-### Profile-wide instruction contract (opt-in)
+### Native auto-load and opt-in instruction pinning
 
-Set `instructions.file` in the active profile's `config.yaml` to a trusted Markdown file.
-An absolute path is used as supplied; a relative path resolves from that profile's
-`HERMES_HOME`, **not** the project working directory. The default is empty (disabled).
-Use a version-controlled source; changing this setting is not a deployment or approval
-mechanism. `SOUL.md`, skills discovery and project-file precedence remain independent.
+`skills.auto_load` fully loads configured skills into the stable prompt tier, independently
+of the project working directory. Its resolver, renderer and per-agent cache are backported
+from [NousResearch/hermes-agent 4ea8d23c](https://github.com/NousResearch/hermes-agent/commit/4ea8d23cc9f527332ccb1d55359b27741b6ea51b):
+`agent.skill_commands.resolve_auto_load_skills`, `build_auto_load_prompt`, and
+`agent.system_prompt._auto_load_parts`. Existing `skills.always_on` is a transitional input
+alias merged into the same list, not a second renderer. Hidden skills remain loadable by
+name; disabled skills are not loaded. Ordinary auto_load is best-effort and logs missing names.
+
+The fork's optional **`instructions.pin`** adds version continuity; it is not an upstream
+setting. No separate Markdown loader or `instructions.file` is needed:
 
 ```yaml
+skills:
+  external_dirs: [/path/to/approved/skills]
+  auto_load: [operating-contract]
 instructions:
-  file: /path/to/approved/shared-instructions.md
+  pin: true
 ```
 
-`agent/instruction_contract.py` composes the complete global contract before the native
-project context in the context tier. New opted-in sessions snapshot that slice (global
-text, source, SHA-256, rendered project context) in the existing session `model_config`.
-No new database or schema migration is required. Missing, empty, security-blocked or
-oversized global files fail explicitly; required rules are never silently truncated.
-`skip_context_files` continues to skip this layer.
+Pinning makes the configured auto-load list mandatory. Native lookup must supply complete,
+non-empty, enabled skill bodies within the context-file budget; scanner failures, ignore-rules
+mode, missing skill tools or failed rendering cannot silently launch a contract-free chat.
+`skip_context_files` still excludes internal/delegated agents. Profile isolation uses the
+session's existing home boundary, not a process-global profile substitution.
 
-On subsequent turns and resume, the saved slice wins even if the configured source is
-changed, removed or disabled. A changed/unreadable source emits a user-facing warning
-through the existing warning callback, once per observed state. It suggests a new chat
-with a handoff; it never appends a synthetic user message or rewrites history. The warning
-receipt is persisted. New chats adopt the new source. A reused agent with a new session ID
-must not reuse the previous session's snapshot.
+New opted-in sessions save the native auto-load result and rendered startup project context
+in existing session `model_config`, with a checksum and project/home binding. No new database
+or schema migration is used. Continuing chats restore this slice across resume and compaction.
+A changed/unavailable global **or project** source emits the existing warning callback once
+per observed state and suggests a new chat with a handoff. Warnings do not mutate history or
+append synthetic user messages. A changed project directory refuses the old snapshot rather
+than silently leaking another project's rules. A new session ID adopts current rules.
 
-Compaction still rebuilds the prompt, refreshes tools and reloads memory normally; only
-the opted-in instruction slice is pinned. Session snapshot read/write failures cannot
-silently replace it with live files. Legacy sessions without metadata report an unknown
-instruction version, do not adopt the global contract, and keep their existing native
-project-context lifecycle. They need a new chat to acquire version pinning; historical
-rules are not reconstructed or migrated. Snapshots are profile-bound; other profiles do
-not inherit this setting or its content.
+Compaction still reloads memory and refreshes tools. SOUL identity, plugins and other native
+blocks retain their existing lifecycle. Progressive subdirectory hints are tool-result
+context, not the pinned startup slice. Legacy sessions without a snapshot are marked unknown;
+they do not acquire today's auto-loaded contract retroactively. Persisted snapshot errors
+fail explicitly instead of replacing saved rules with current files. In-memory embedders
+without a SessionDB cannot promise cross-process resume.
 
-Disabling the setting is a rollback for **new** chats, not a rewrite of existing saved
-contracts. Runtime upgrade/rollback and state recovery remain separate operations.
+Disabling pinning affects new sessions, not saved snapshots. Configuration and runtime
+rollout require separate approval. Deploy the compatible runtime before switching to
+`auto_load`; rolling back to a pre-backport runtime also requires restoring its previous
+configuration. The discarded, unshipped version-1 `instructions.file` prototype is not
+migrated: incompatible snapshot versions fail explicitly.
+
 
 ### Concrete example: assembled system prompt
 

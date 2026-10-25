@@ -485,9 +485,9 @@ DEFAULT_CONFIG = {
     # Seconds to wait for a single context file read before skipping it with a warning. Guards startup
     # against network-backed filesystems (iCloud Drive, OneDrive, NFS) that can block a cold read.
     "context_file_read_timeout": 5.0,
-    # Opt-in global instructions; relative paths resolve from the active profile home.
-    # New sessions snapshot this file and their project context, never SOUL/memory/tools.
-    "instructions": {"file": ""},
+    # Opt-in durable snapshots around native skills.auto_load and startup project context.
+    # Pinning makes configured auto_load skills mandatory; memory/tools remain dynamic.
+    "instructions": {"pin": False},
     # Max chars per read_file call; larger reads are rejected with offset+limit guidance. 100K chars
     # ≈ 25–35K tokens.
     "file_read_max_chars": 100_000,
@@ -1335,6 +1335,7 @@ DEFAULT_CONFIG = {
     # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
+        "auto_load": [],  # Native full-skill preload; always_on remains an input alias during rollout.
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
