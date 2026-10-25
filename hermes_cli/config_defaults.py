@@ -485,6 +485,9 @@ DEFAULT_CONFIG = {
     # Seconds to wait for a single context file read before skipping it with a warning. Guards startup
     # against network-backed filesystems (iCloud Drive, OneDrive, NFS) that can block a cold read.
     "context_file_read_timeout": 5.0,
+    # Opt-in global instructions; relative paths resolve from the active profile home.
+    # New sessions snapshot this file and their project context, never SOUL/memory/tools.
+    "instructions": {"file": ""},
     # Max chars per read_file call; larger reads are rejected with offset+limit guidance. 100K chars
     # ≈ 25–35K tokens.
     "file_read_max_chars": 100_000,

@@ -876,6 +876,10 @@ def build_turn_context(
             f"{'...' if len(_preview_text) > 60 else ''}'"
         )
 
+    # Version checks notify out-of-band; never mutate the cached prefix/history.
+    from agent.instruction_contract import prepare_instructions, persist_instructions
+    prepare_instructions(agent, continuing=bool(conversation_history))
+
     # System prompt is cached per session for prefix caching.
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
@@ -891,6 +895,7 @@ def build_turn_context(
         logger.debug("message_agent injection skipped", exc_info=True)
 
     _ensure_session_row(agent, pending_cli_message)
+    persist_instructions(agent)
 
     compaction = run_turn_start_compaction(
         agent, messages=messages, system_message=system_message,

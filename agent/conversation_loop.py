@@ -643,6 +643,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     Mutates ``agent._cached_system_prompt`` and persists a freshly-built prompt on first
     build. Row states ``missing``/``null``/``empty``/``present`` are logged and DB
     failures log at WARNING so silent prefix-cache misses show in ``agent.log``."""
+    from agent.instruction_contract import prepare_instructions
+    prepare_instructions(agent, continuing=bool(conversation_history))
     stored_prompt = None
     stored_state = "missing"
     session_row = None

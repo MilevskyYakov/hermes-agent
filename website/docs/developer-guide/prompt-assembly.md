@@ -41,6 +41,44 @@ This ordering matters for precedence discussions:
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
 
+### Profile-wide instruction contract (opt-in)
+
+Set `instructions.file` in the active profile's `config.yaml` to a trusted Markdown file.
+An absolute path is used as supplied; a relative path resolves from that profile's
+`HERMES_HOME`, **not** the project working directory. The default is empty (disabled).
+Use a version-controlled source; changing this setting is not a deployment or approval
+mechanism. `SOUL.md`, skills discovery and project-file precedence remain independent.
+
+```yaml
+instructions:
+  file: /path/to/approved/shared-instructions.md
+```
+
+`agent/instruction_contract.py` composes the complete global contract before the native
+project context in the context tier. New opted-in sessions snapshot that slice (global
+text, source, SHA-256, rendered project context) in the existing session `model_config`.
+No new database or schema migration is required. Missing, empty, security-blocked or
+oversized global files fail explicitly; required rules are never silently truncated.
+`skip_context_files` continues to skip this layer.
+
+On subsequent turns and resume, the saved slice wins even if the configured source is
+changed, removed or disabled. A changed/unreadable source emits a user-facing warning
+through the existing warning callback, once per observed state. It suggests a new chat
+with a handoff; it never appends a synthetic user message or rewrites history. The warning
+receipt is persisted. New chats adopt the new source. A reused agent with a new session ID
+must not reuse the previous session's snapshot.
+
+Compaction still rebuilds the prompt, refreshes tools and reloads memory normally; only
+the opted-in instruction slice is pinned. Session snapshot read/write failures cannot
+silently replace it with live files. Legacy sessions without metadata report an unknown
+instruction version, do not adopt the global contract, and keep their existing native
+project-context lifecycle. They need a new chat to acquire version pinning; historical
+rules are not reconstructed or migrated. Snapshots are profile-bound; other profiles do
+not inherit this setting or its content.
+
+Disabling the setting is a rollback for **new** chats, not a rewrite of existing saved
+contracts. Runtime upgrade/rollback and state recovery remain separate operations.
+
 ### Concrete example: assembled system prompt
 
 Here is a simplified view of what the final system prompt looks like when all layers are present (comments show the source of each section):
