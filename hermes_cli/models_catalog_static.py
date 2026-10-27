@@ -357,8 +357,10 @@ _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
 try:
     from providers import list_providers as _list_providers_for_canonical
     for _pp in _list_providers_for_canonical():
+        # external_process rows are admitted too: the generic plugin flow resolves their
+        # readiness from `setup_status` rather than a bespoke wizard.
         if _pp.name in _canonical_slugs or _pp.auth_type in {
-            "oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex",
+            "oauth_device_code", "oauth_external", "aws_sdk", "copilot", "vertex",
         }:
             continue
         _label = _pp.display_name or _pp.name

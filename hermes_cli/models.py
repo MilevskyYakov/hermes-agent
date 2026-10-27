@@ -1272,10 +1272,14 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     from providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
-    if not (profile and profile.auth_type == "api_key" and profile.base_url):
+    # external_process profiles answer from their own CLI, not from a keyed endpoint.
+    if not (profile and profile.base_url and profile.auth_type in {"api_key", "external_process"}):
         return None
-    api_key, base_url = _api_key_credentials(normalized)
-    live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
+    if profile.auth_type == "external_process":
+        api_key, base_url = "", profile.base_url
+    else:
+        api_key, base_url = _api_key_credentials(normalized)
+    live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None)
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())

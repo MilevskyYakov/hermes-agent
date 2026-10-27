@@ -3,6 +3,8 @@
 from __future__ import annotations
 from hermes_cli.cli_output import line_input
 
+import asyncio
+import inspect
 import math
 import sys
 import time
@@ -79,6 +81,58 @@ _PROVIDER_ALIASES = {
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     return _PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized) or normalized
+
+
+def _provider_auth_handler(provider: str) -> tuple[Any, Callable | None]:
+    """Return ``(profile, handler)`` when *provider*'s plugin owns its own auth.
+
+    ``(None, None)`` when no profile is registered for the name, ``(profile,
+    None)`` when one is registered without an auth handler.
+    """
+    try:
+        from providers import get_provider_profile
+    except Exception:  # provider layer unavailable — built-in path only
+        return None, None
+    profile = get_provider_profile(provider)
+    handler = profile.auth_handler if profile is not None else None
+    return (profile, handler) if callable(handler) else (profile, None)
+
+def _await_from_sync(coro):
+    """Run a provider handler's coroutine from the sync CLI path.
+
+    Safe inside a running loop too (gateway/embedded callers) — same idiom as
+    ``agent.context_references.preprocess_context_references``.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+def _dispatch_provider_auth(action: str, args, provider: str) -> bool:
+    """Offer ``hermes auth <action> <provider>`` to the provider's auth handler.
+
+    Returns True when the provider owned the action (core prints nothing more
+    and returns); False when the caller must run the built-in path. A handler
+    that fails becomes a readable ``SystemExit`` naming provider and action
+    instead of a raw traceback.
+    """
+    _profile, handler = _provider_auth_handler(provider)
+    if handler is None:
+        return False
+    try:
+        result = handler(action, args)
+        if inspect.isawaitable(result):
+            result = _await_from_sync(result)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(
+            f"{provider} auth handler failed for `{action}`: {type(exc).__name__}: {exc}"
+        ) from exc
+    return bool(result)
 
 
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
@@ -331,6 +385,8 @@ def _add_api_key_credential(args, provider: str, pool) -> None:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
+    if _dispatch_provider_auth("add", args, provider):
+        return
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
         raise SystemExit(f"Unknown provider: {provider}")
@@ -449,6 +505,8 @@ def auth_reset_command(args) -> None:
 
 def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
+    if _dispatch_provider_auth("status", args, provider):
+        return
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
     if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
@@ -467,7 +525,10 @@ def auth_status_command(args) -> None:
 
 
 def auth_logout_command(args) -> None:
-    auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+    raw_provider = getattr(args, "provider", None)
+    if _dispatch_provider_auth("logout", args, _normalize_provider(raw_provider or "")):
+        return
+    auth_mod.logout_command(SimpleNamespace(provider=raw_provider))
 
 
 def auth_spotify_command(args) -> None:
@@ -574,6 +635,8 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
+    if _dispatch_provider_auth("add", SimpleNamespace(provider=provider), provider):
+        return
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
         raise SystemExit(f"Unknown provider: {provider}")

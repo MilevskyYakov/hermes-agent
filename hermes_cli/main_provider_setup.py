@@ -10,6 +10,15 @@ from typing import Optional
 from hermes_cli.model_setup_flows_common import _ask, _ensure_dict_section, _print_numbered, _radiolist, _say
 
 
+def _is_profile_provider(provider_id: str) -> bool:
+    """True when a providers/ profile is registered for *provider_id* (any auth type)."""
+    try:
+        from providers import get_provider_profile
+        return get_provider_profile(provider_id) is not None
+    except Exception:
+        return False
+
+
 def _is_profile_api_key_provider(provider_id: str) -> bool:
     """True when *provider_id* maps to a profile with ``auth_type='api_key'`` — the catch-all
     in select_provider_and_model() so plugin providers dispatch to the generic key flow."""

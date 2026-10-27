@@ -148,6 +148,10 @@ class ClientLifecycleMixin:
         if client is None:
             return
         try:
+            # A process-backed provider owns no sockets: cancel its worker instead.
+            if callable(getattr(type(client), "cancel", None)):
+                client.cancel()
+                return
             shutdown_count = self._force_close_tcp_sockets(client)
             logger.info(
                 "Shared OpenAI client retired (%s, tcp_shutdown=%d, fd_release=deferred_to_gc) %s",
@@ -346,6 +350,10 @@ class ClientLifecycleMixin:
             if cache["client"] is client:
                 cache["poisoned"] = True
         try:
+            # A process-backed provider owns no sockets: cancel its worker instead.
+            if callable(getattr(type(client), "cancel", None)):
+                client.cancel()
+                return
             shutdown_count = self._force_close_tcp_sockets(client)
             # Zero sockets shut down means the worker stays blocked — WARN, not success.
             # tcp_force_closed=0 means the stranger-thread abort found no sockets to shut down — the worker

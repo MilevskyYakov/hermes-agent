@@ -614,6 +614,51 @@ def _model_flow_copilot_acp(config, current_model=""):
                   base_url=effective_base, api_mode="chat_completions")
 
 
+def _model_flow_plugin_provider(config, provider_id, current_model=""):
+    """Generic flow for an out-of-tree provider profile with no bespoke wizard.
+
+    Readiness comes from the profile (`setup_status`, external-process command, or auth
+    status); the catalog from the profile's own live fetch with its curated fallback.
+    """
+    from hermes_cli.auth import get_auth_status, get_external_process_provider_status
+    from providers import get_provider_profile
+
+    del config
+    profile = get_provider_profile(provider_id)
+    if profile is None:
+        print(f"  Unknown provider: {provider_id}")
+        return
+    name = profile.display_name or provider_id
+    if profile.auth_type == "external_process":
+        status = get_external_process_provider_status(provider_id)
+        if not status.get("configured"):
+            print(f"  {name}: executable not found. Install it, or set the profile's command env var.")
+            return
+        base_url = status.get("base_url") or profile.base_url
+    else:
+        if not (get_auth_status(provider_id) or {}).get("logged_in"):
+            print(f"  Not signed in to {name}. Run: hermes auth add {provider_id}")
+            return
+        base_url = profile.base_url
+
+    profile_status = profile.setup_status() if hasattr(profile, "setup_status") else None
+    if isinstance(profile_status, dict) and profile_status.get("logged_in") is False:
+        print(f"  {name}: {profile_status.get('detail') or 'not signed in'}")
+        return
+    try:
+        catalog = list(profile.fetch_models() or ())
+    except Exception:
+        catalog = []
+    catalog = catalog or list(profile.fallback_models or ())
+    if not catalog:
+        print(f"  {name}: no model catalog available. Enter a model id manually.")
+    selected = _pick_model_or_prompt(
+        catalog, "Model name: ", current_model=current_model,
+        confirm_provider=provider_id, confirm_base_url=base_url)
+    _finish_model(selected, provider_id, f"Default model set to: {selected} (via {name})",
+                  base_url=base_url, api_mode=profile.api_mode)
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection; the endpoint is chosen by key prefix (no URL prompt):
     ``sk-kimi-*`` → api.kimi.com/coding/v1 (Kimi Coding Plan), other keys → Moonshot."""
