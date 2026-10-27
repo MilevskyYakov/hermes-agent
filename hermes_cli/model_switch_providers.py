@@ -789,6 +789,23 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
         b.seen_slugs.add(pid.lower())
 
 
+def _is_external_process_provider(pconfig) -> bool:
+    return bool(pconfig is not None and getattr(pconfig, "auth_type", "") == "external_process")
+
+
+def _external_process_ready(slug: str) -> bool:
+    """A local CLI that resolves IS the credential for an external-process provider."""
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, _external_process_spec
+        pconfig = PROVIDER_REGISTRY.get(slug)
+        if not _is_external_process_provider(pconfig):
+            return False
+        _cmd, _args, base_url, resolved, _env = _external_process_spec(pconfig)
+        return bool(resolved) or str(base_url).startswith("acp+tcp://")
+    except Exception:
+        return False
+
+
 def _lap_canonical_rows(b: _PickerBuild) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
@@ -809,7 +826,8 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
-            _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+            _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider)) or (
+            _is_external_process_provider(cp_config) and _external_process_ready(cp.slug))
         if not has_creds:
             continue
         if _is_aws_sdk(cp_config):
