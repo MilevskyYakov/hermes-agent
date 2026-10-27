@@ -54,6 +54,9 @@ class ProviderProfile:
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    # Optional provider-owned hooks; keyword-only preserves positional profiles.
+    auth_handler: Any = field(default=None, kw_only=True)
+    classify_api_error: Any = field(default=None, kw_only=True)
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
 
     # ── Vision support ────────────────────────────────────────
@@ -111,6 +114,18 @@ class ProviderProfile:
     # empty = use main model
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def fetch_account_usage(self, *, base_url: str | None = None, api_key: str | None = None) -> Any:
+        """Optional account limits, consulted only when no built-in fetcher owns the provider."""
+        return None
+
+    def get_model_context_length(self, model: str) -> int | None:
+        """Provider context bound; explicit user overrides take precedence."""
+        return None
+
+    def setup_status(self, **kwargs: Any) -> dict[str, Any] | None:
+        """Optional external-client readiness and login evidence."""
+        return None
 
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".

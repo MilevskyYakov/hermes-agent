@@ -42,6 +42,7 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    raw: Optional[dict[str, Any]] = None
 
     @property
     def available(self) -> bool:
@@ -563,11 +564,32 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
 }
 
 
+PLUGIN_USAGE_HOOK_DEADLINE_S = 10.0
+
+
+def _call_plugin_usage_hook(profile, base_url, api_key) -> Optional[AccountUsageSnapshot]:
+    from agent.deadline import run_bounded_sync
+    from providers.base import ProviderProfile
+
+    # Plugin profiles set the hook on the class; a plain attribute on the instance counts too.
+    hook = getattr(profile, "fetch_account_usage", None)
+    if hook is None or getattr(hook, "__func__", None) is ProviderProfile.fetch_account_usage:
+        return None
+    result = run_bounded_sync(
+        lambda: profile.fetch_account_usage(base_url=base_url, api_key=api_key),
+        PLUGIN_USAGE_HOOK_DEADLINE_S, label="plugin-account-usage")
+    return None if result.timed_out else result.value
+
+
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
     try:
-        return fetcher(base_url, api_key) if fetcher else None
+        if fetcher:
+            return fetcher(base_url, api_key)
+        from providers import get_provider_profile
+        profile = get_provider_profile(str(provider or "").strip().lower())
+        return _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
         return None

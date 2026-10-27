@@ -480,6 +480,57 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     return verdict
 
 
+def _profile_verdict(c: _Ctx) -> Optional[Verdict]:
+    """The current provider's own ``ProviderProfile.classify_api_error`` verdict, or None.
+
+    A ``kind: model-provider`` plugin never enters the PluginManager hook lifecycle, so without this a
+    vendor-specific body (a 403 ``quota_exhausted`` that is billing, not auth) could only be corrected by
+    shipping a second plugin component. Scoped to the provider that produced the error; no name table."""
+    if not c.provider_slug:
+        return None
+    try:
+        from providers import get_provider_profile
+        hook = getattr(get_provider_profile(c.provider_slug), "classify_api_error", None)
+        if not callable(hook):
+            return None
+        result = hook(c.error, status_code=c.status_code, error_code=c.error_code, message=c.msg,
+                      body=c.body, model=c.model)
+    except Exception as exc:
+        logger.debug("Provider profile error classification failed for %s: %s", c.provider_slug, exc)
+        return None
+    if not isinstance(result, dict):
+        return None
+    reason = result.get("reason")
+    if isinstance(reason, str):
+        try:
+            reason = FailoverReason(reason.strip().lower())
+        except ValueError:
+            return None
+    if not isinstance(reason, FailoverReason):
+        return None
+    hints = {k: bool(result[k]) for k in _HINT_FLAGS if k in result}
+    # turn_api_error walks the fallback chain only for non-retryable verdicts outside
+    # RETRYABLE_CLIENT_REASONS; the built-in terminal verdicts (billing, auth, model_not_found …) pin
+    # retryable=False, the rate-limit family stays retryable and reaches fallback after backoff. Give
+    # a hook that asks for fallback the built-in default for its reason, so it cascades like one.
+    if hints.get("should_fallback") and "retryable" not in hints and reason not in RETRYABLE_CLIENT_REASONS:
+        hints["retryable"] = False
+    verdict = _v(reason, **hints)
+    if isinstance(result.get("error_context"), dict):
+        verdict["error_context"] = result["error_context"]
+    logger.info("API error classified by provider profile: %s (provider=%s, status=%s)",
+                reason.value, c.provider, c.status_code)
+    return verdict
+
+_HINT_FLAGS = ("retryable", "should_compress", "should_rotate_credential", "should_fallback")
+
+RETRYABLE_CLIENT_REASONS = frozenset({
+    FailoverReason.rate_limit, FailoverReason.upstream_rate_limit, FailoverReason.overloaded,
+    FailoverReason.context_overflow, FailoverReason.payload_too_large, FailoverReason.long_context_tier,
+    FailoverReason.thinking_signature,
+})
+
+
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
@@ -596,7 +647,7 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 # MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 
