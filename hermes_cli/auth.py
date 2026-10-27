@@ -1813,6 +1813,13 @@ def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[st
     Hermes can't read). Deliberately subprocess-free: spawning ``gh auth token`` from status
     endpoints/pickers re-creates the cold-start stall copilot_auth.py avoids."""
     if provider_id != "copilot-acp":
+        # Out-of-tree external-process providers keep their session inside their own CLI;
+        # a resolvable binary is the only cheap positive evidence (same shape as copilot-acp).
+        pconf = PROVIDER_REGISTRY.get(provider_id)
+        if pconf is not None and pconf.auth_type == "external_process":
+            _cmd, _args, _base, resolved, _env = _external_process_spec(pconf)
+            if resolved or str(_base).startswith("acp+tcp://"):
+                return True, "external CLI resolves"
         return False, None
     # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
     try:
