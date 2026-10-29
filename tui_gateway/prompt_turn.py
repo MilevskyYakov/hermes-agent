@@ -473,6 +473,22 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         _sync_agent_compression_with_config(sid, session)
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     st.agent = agent = session["agent"]
+    from tui_gateway.instruction_workspace import ensure_instruction_workspace
+    if _is_local_terminal_backend() and not ensure_instruction_workspace(
+        agent, _session_cwd(session), choose=getattr(agent, "clarify_callback", None),
+        move=lambda cwd: _set_session_cwd(session, cwd),
+        cancelled=lambda: bool(session.get("_turn_cancel_requested") or getattr(agent, "_interrupt_requested", False)),
+    ):
+        st.result = {"interrupted": True, "final_response": ""}
+        if st.terminal_callback is not None:
+            st.receipt_attempted = True
+            st.terminal_callback({"status": "cancelled", "text": ""})
+            st.receipt_committed = True
+        _emit("message.complete", sid, {"text": "", "status": "interrupted"})
+        return None
+    # A selected directory must own both runtime context and terminal overrides on THIS turn.
+    _clear_session_context(scopes.session_tokens)
+    scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
         st.history = list(session["history"])

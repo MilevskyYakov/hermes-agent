@@ -24,6 +24,13 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     questions.add_argument("--recover", metavar="REQUEST_ID", help="Record reviewed recovery after the original process exited")
     questions.add_argument("--effects-reviewed", metavar="EVIDENCE", help="What confirmed the previous external effects; required for recovery")
 
+    rebind = sessions_subparsers.add_parser(
+        "rebind-cwd", help="Recover a pinned chat after a directory/worktree move; requires identical project rules")
+    rebind.add_argument("session_id", help="Exact stored session ID (not the eight-character TUI tab ID)")
+    rebind.add_argument("--cwd", required=True, type=Path, help="Existing target working directory")
+    _flag(rebind, "--dry-run", help="Check the target without changing session metadata")
+    add_yes_flag(rebind, "Confirm the metadata-only move; close the affected chat before applying")
+
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
