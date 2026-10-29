@@ -89,7 +89,7 @@ def _sources(agent, home) -> str:
         return _hash([sources, config.get("skills", {})])
 
 
-def _validate(snapshot, home):
+def _validate(snapshot, home, *, check_cwd=True, session_id="SESSION_ID"):
     if snapshot.get("version") != 2 or snapshot.get("home") != str(home):
         raise ValueError("Instruction snapshot version/profile mismatch; start a new chat")
     if snapshot.get("legacy") is True:
@@ -112,8 +112,35 @@ def _validate(snapshot, home):
         valid = False
     if not valid:
         raise ValueError("Instruction snapshot checksum/shape mismatch; start a new chat")
-    if snapshot["cwd"] != _cwd():
-        raise ValueError("Project changed for a pinned chat; start a new chat with a handoff")
+    if check_cwd and snapshot["cwd"] != _cwd():
+        raise ValueError(
+            f"Project directory changed for a pinned chat (saved: {snapshot['cwd']}; current: {_cwd()}). "
+            "Restore the original directory, or close this chat and run "
+            f"'hermes sessions rebind-cwd {session_id} --cwd PATH'. "
+            "Rebinding requires identical project rules; otherwise start a new chat with a handoff."
+        )
+
+
+def rebind_instruction_cwd(snapshot, home, cwd):
+    """Explicit metadata-only move; never adopt new instruction text or alter the cached prompt."""
+    from agent.prompt_builder import build_context_files_prompt
+
+    if not isinstance(snapshot, dict) or snapshot.get("legacy"):
+        raise ValueError("A verified instruction snapshot is required; start a new chat with a handoff")
+    _validate(snapshot, home, check_cwd=False)
+    target = Path(cwd).expanduser().resolve()
+    if not target.is_dir():
+        raise ValueError("Target working directory is not a directory")
+    with _profile(home):
+        project = build_context_files_prompt(
+            cwd=str(target), skip_soul=snapshot["soul_loaded"], home_override=home,
+            allow_install_tree_fallback=False,
+        )
+    if not snapshot["project"] or project != snapshot["project"]:
+        raise ValueError("Target project rules differ or are unavailable; start a new chat with a handoff")
+    rebound = dict(snapshot, cwd=str(target))
+    rebound["sha256"] = _checksum(rebound)
+    return rebound
 
 
 def prepare_instructions(agent, *, continuing: bool = False) -> None:
@@ -141,7 +168,16 @@ def prepare_instructions(agent, *, continuing: bool = False) -> None:
         agent._instruction_contract_snapshot = snapshot
         agent._instruction_contract_dirty = True
     if snapshot is not None:
-        _validate(snapshot, home)
+        _validate(snapshot, home, check_cwd=False)
+        if not snapshot.get("legacy") and snapshot["cwd"] != _cwd():
+            previous = snapshot["cwd"]
+            snapshot = rebind_instruction_cwd(snapshot, home, _cwd())
+            agent._instruction_contract_snapshot = snapshot
+            agent._instruction_contract_dirty = True
+            agent._emit_warning(
+                f"Working directory changed from {previous} to {snapshot['cwd']}. "
+                "Project rules match exactly; continuing with the saved instruction text."
+            )
         if snapshot.get("legacy") and "legacy_skills" not in snapshot:
             from agent.system_prompt import recover_legacy_auto_load
             prompt = getattr(agent, "_cached_system_prompt", None)

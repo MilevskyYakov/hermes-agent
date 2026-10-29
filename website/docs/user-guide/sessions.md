@@ -179,6 +179,32 @@ hermes --resume 20250305_091523_a1b2c3 --no-restore-cwd
 
 A `↪ restored workspace dir: …` line confirms the switch. Restore failures never break the resume itself.
 
+#### Pinned Instructions and Removed Worktrees (Fork Extension)
+
+This fork's opt-in `instructions.pin: true` keeps the loaded instruction text across
+resume and compression. It does not require keeping a temporary Git worktree forever:
+
+- When the working directory changes and the target's non-empty project context matches
+  the saved context exactly, Hermes updates the directory metadata and shows a notice.
+  Saved global and project instruction text is not replaced.
+- If the project rules differ or are unavailable, the local TUI/Desktop gateway asks for
+  an existing directory before invoking the model. Enter an absolute path or `~/...`.
+  A blank answer, timeout, cancellation or incompatible directory pauses the request;
+  no model call or task action starts. Send the request again when ready.
+- A genuinely different project/rule set still requires a new chat with a handoff.
+
+For explicit recovery from another terminal, close the affected chat and use the exact
+stored session ID from `hermes sessions list` (not the short TUI tab ID):
+
+```bash
+hermes sessions rebind-cwd SESSION_ID --cwd ~/code/my-project --dry-run
+hermes sessions rebind-cwd SESSION_ID --cwd ~/code/my-project --yes
+```
+
+This checks the same project rules, refuses busy sessions, preserves messages and saved
+instruction text, and backs up the original metadata under the active profile's `backups/`
+directory. Resume the closed chat afterward. No running process is restarted by this command.
+
 ### Filtering Sessions by Workspace
 
 `hermes sessions list` accepts `--workspace <needle>` to show only sessions whose workspace key (git repo root, else cwd) matches — by path substring or exact directory basename:
