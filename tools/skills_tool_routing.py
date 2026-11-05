@@ -75,7 +75,7 @@ def _message_text(content: Any) -> str:
 
 
 def _explicit_skill_command(text: str) -> str | None:
-    """One literal edge command, never a quoted example or a prose header.
+    """One literal command anywhere, never a quoted example or a prose header.
 
     Native bundles/stacks use source-checked preload receipts instead. This is
     deliberately not a natural-language intent classifier.
@@ -92,14 +92,12 @@ def _explicit_skill_command(text: str) -> str | None:
         blank, literal,
     )
     commands = list(re.finditer(
-        r"(?<!\S)/([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)(?=\s|$)", literal,
+        r"(?<![^\s(])/([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)(?=\s|$|[,.;!?)]+(?:\s|$))", literal,
     ))
     if len(commands) != 1:
         return None
     command = commands[0]
     leading = not text[:command.start()].strip()
-    if not leading and text[command.end():].strip():
-        return None
     if re.search(
         r"(?i)\b(?:запрещ\w*|не\s+(?:разреш\w*|хочу)\b|never\b|не\s+(?:(?:надо|нужно|следует|стоит)\s+)?"
         r"(?:запуск\w*|запусти\w*|использ\w*|вызыва\w*|вызов\w*|активир\w*|загруж\w*|выполн\w*|открыва\w*|/)|"
@@ -111,21 +109,20 @@ def _explicit_skill_command(text: str) -> str | None:
         before = literal[:command.start()].rstrip()
         if re.search(r"(?i)\b(?:если|когда|if|when|unless)\b|\?", before):
             return None
-        if re.search(r"(?i)(?:^|[.!?\n])\s*(?:что\b.*|what\b.*|объясни.*|обсудим.*|обсуди.*|"
-                     r"explain.*|discuss.*|расскажи.*|пример:|example:|цитата:)\s*$", before):
+        if re.search(
+            r"(?i)(?:^|[.!?\n])\s*(?:(?:что|what)\s+(?:делает|означает|такое|is|does)\b.*|"
+            r"should\s+i\b.*|(?:объясни|расскажи|explain)\b.*(?:что\s+(?:делает|означает)|как\s+работает)\s*|"
+            r"пример:|example:|цитата:)\s*$", before,
+        ):
             return None
-        standalone = not text[:command.start()].rsplit("\n", 1)[-1].strip()
-        if not standalone:
-            # Bounded imperative syntax, not an arbitrary prose suffix or NLP classifier.
-            # Ambiguous wording can use a leading command or a separate command line.
-            clauses = [part.strip() for part in re.split(r"[,;.!\n]", before) if part.strip()]
-            if not clauses or not re.match(
-                r"(?i)^(?:(?:для этого|пожалуйста|please)\s+)?"
-                r"(?:создай|подготовь|сделай|проверь|проведи|разбери|исправь|запусти|выполни|"
-                r"используй|сохрани|оформи|create|prepare|check|review|audit|fix|run|execute|use|save)\b",
-                clauses[-1],
-            ):
-                return None
+        if not literal[command.end():].strip(" \t\r\n,.;!?)") and re.search(
+            r"(?i)(?:^|[.!?\n])\s*(?:объясни|обсудим|обсуди|расскажи|explain|discuss)"
+            r"(?:\s+(?:подробнее\s+)?(?:о|про|about))?"
+            r"(?:\s+(?:команд[ауые]|скилл|skill|command))?\s*$", before,
+        ):
+            return None
+        if re.search(r"(?i)\b(?:упомина\w*|название\s+команды|(?:documentation|docs?)\s+mentions?)\s*$", before):
+            return None
     return command.group(1)
 
 
