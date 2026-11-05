@@ -28,6 +28,11 @@ def isolated_routing(tmp_path, monkeypatch):
     "Не меняй код, подготовь задачу /issue",
     "Создай задачу проверить так все скиллы /issue",
     "Можно точно размещать, вопрос как это внедрить, для этого создай отдельную задачу с полностью пописанным контекстом /issue",
+    "Давай еще подумаем по решениям, может еще что-то надо /issue",
+    "Да го /issue", "Давай /issue разберем счета", "Сначала /issue потом задача",
+    "Да, /issue, подготовь задачу", "Давай закончим /issue.",
+    "Обсуди /issue детали задачи", "Объясни путь /issue",
+    "Что еще нужно учесть /issue", "Расскажи о счетах /issue",
 ])
 def test_single_explicit_command_owns_turn(text):
     with routing.skill_routing_context([{"role": "user", "content": text}], "s", "t"):
@@ -36,6 +41,29 @@ def test_single_explicit_command_owns_turn(text):
         assert root["prompt_payload_included"] and "issue instructions" in root["content"]
         assert _call("dev", as_dependency=True)["success"]
         assert _call("issue")["load_state"] == "cached"
+
+
+@pytest.mark.parametrize("name,alias", [
+    ("grill", "grill"), ("taskfinish", "taskfinish"),
+    ("custom-workflow", "custom-workflow"), ("review_owner", "review-alias"),
+])
+@pytest.mark.parametrize("text", [
+    "/{alias} разберем счета", "Давай /{alias} разберем счета",
+    "Да го /{alias}", "Давай разберем счета\n/{alias}\nЗатем обсудим результат",
+    "Давай /{alias}, разберем счета", "Да го /{alias}.", "Давай (/{alias}) разберем счета",
+])
+def test_command_position_and_skill_name_do_not_change_manual_routing(tmp_path, name, alias, text):
+    _make_skill(tmp_path, name, {"auto": "none", "direct": True, "slash": [alias]})
+    with routing.skill_routing_context(
+        [{"role": "user", "content": text.format(alias=alias)}], "position", "turn"
+    ):
+        assert _call("dev")["routing_outcome"] == "manual_precedence"
+        root = _call(name)
+        assert root["routing_outcome"] == "manual_selected"
+        assert root["prompt_payload_included"] and f"{name} instructions" in root["content"]
+        assert _call("dev", as_dependency=True)["success"]
+        assert _call(name)["load_state"] == "cached"
+        assert not _call("issue")["success"]
 
 
 @pytest.mark.parametrize("text", [
@@ -54,9 +82,12 @@ def test_single_explicit_command_owns_turn(text):
     "Пример: /issue", "Example: /issue", "Цитата: /issue",
     '"/issue"', "'/issue'", "«/issue»", "`/issue`", "```text\n/issue\n```",
     "```\nunfinished fence\n/issue", "~~~text\n/issue\n~~~", "> /issue",
-    "https://example.invalid/issue", "/tmp/issue", "Read /issue/SKILL.md",
-    "/issue /dev неясный выбор", "Выбери /dev или /issue",
-    "Сначала /issue потом задача", "'unfinished quote /issue",
+    "https://example.invalid/issue", "/tmp/issue", "Read /issue/SKILL.md", "Read /issue.md",
+    "Давай не запускай /issue потом обсудим", "Давай ` /issue ` потом обсудим",
+    "В документации упоминается /issue, но это не запуск", "Docs mention /issue here",
+    "Пример: /issue, затем аргументы", "Не запускай (/issue).",
+    "/issue /dev неясный выбор", "Выбери /dev или /issue", "Давай /issue, /dev.",
+    "'unfinished quote /issue",
     "/ponytail::issue",
     'Цитата: The user has invoked the "issue" skill',
     'The user has invoked the "issue" skill', "Skills loaded: issue",
@@ -80,6 +111,7 @@ def test_other_message_roles_never_grant_direct_intent(role):
 @pytest.mark.parametrize("text", [
     "/ponytail:ponytail-review", "/ponytail:ponytail-review src/parser.py",
     "Проверь код /ponytail:ponytail-review", "Проверь код\n/ponytail:ponytail-review",
+    "Давай /ponytail:ponytail-review проверим код", "Да го /ponytail:ponytail-review.",
 ])
 def test_qualified_plugin_commands_preserve_native_namespace(text):
     assert routing._explicit_skill_command(text) == "ponytail:ponytail-review"
